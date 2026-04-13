@@ -47,6 +47,33 @@ Worker:
 uv run dramatiq app.workers.tasks_download app.workers.tasks_import app.workers.tasks_normalize app.workers.tasks_sunbiz app.workers.tasks_domains app.workers.tasks_evidence
 ```
 
+## Railway
+
+- El repo ya trae configuración lista para Railway en `railway/api/railway.json`, `railway/worker-state/railway.json` y `railway/worker-web/railway.json`.
+- `scripts/railway-api.sh` arranca FastAPI usando `PORT`.
+- `scripts/railway-migrate.sh` corre `alembic upgrade head`.
+- `scripts/railway-worker-state.sh` consume `fl_download`, `fl_import`, `fl_normalize` y `fl_sunbiz_harvest`.
+- `scripts/railway-worker-web.sh` consume `domain_resolve` y `website_contact_collect`.
+- `app.core.config` acepta variables nativas de Railway para Postgres/Redis/Bucket además de `BIZINTEL_*`: `DATABASE_URL`, `REDIS_URL`, `ENDPOINT`, `BUCKET`, `ACCESS_KEY_ID`, `SECRET_ACCESS_KEY`, `REGION`.
+
+Servicios recomendados en Railway:
+
+- `api`: config path `/railway/api/railway.json`
+- `worker-state`: config path `/railway/worker-state/railway.json`
+- `worker-web`: config path `/railway/worker-web/railway.json`
+- `postgres`, `redis`, `bucket`: recursos gestionados por Railway
+
+Variables mínimas:
+
+- `BIZINTEL_ENV=staging`
+- `BIZINTEL_SEARCH_PROVIDER=none` para el canario oficial de Florida
+- `BIZINTEL_USER_AGENT=bizintel-bot/0.1`
+- `BIZINTEL_FL_BASE_URL=https://sftp.floridados.gov`
+- `BIZINTEL_FL_SUNBIZ_SEARCH_BASE_URL=https://search.sunbiz.org`
+- `BIZINTEL_FL_DOWNLOAD_TIMEOUT_SECONDS=60`
+- `BIZINTEL_FL_DOWNLOAD_RETRIES=3`
+- `BIZINTEL_FL_PDF_RETRY_DAYS=5`
+
 ## Notas de arquitectura
 
 - La staging es append-only y trazable por `job_run_id` + `source_checksum`.

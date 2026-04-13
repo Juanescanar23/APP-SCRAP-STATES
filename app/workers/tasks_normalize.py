@@ -20,7 +20,7 @@ from app.services.normalizer import normalize_stage_payload
 from app.workers.broker import broker  # noqa: F401
 
 
-@dramatiq.actor(max_retries=5)
+@dramatiq.actor(max_retries=5, queue_name="fl_normalize")
 def normalize_entities(
     state: str,
     job_run_id: str | None = None,

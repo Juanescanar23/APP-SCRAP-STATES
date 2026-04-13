@@ -1,0 +1,24 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile",
+    "watchPatterns": [
+      "app/**",
+      "scripts/**",
+      "pyproject.toml",
+      "uv.lock",
+      "alembic.ini",
+      "Dockerfile",
+      ".dockerignore"
+    ]
+  },
+  "deploy": {
+    "startCommand": "sh scripts/railway-api.sh",
+    "preDeployCommand": "sh scripts/railway-migrate.sh",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 120,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 5
+  }
+}

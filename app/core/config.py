@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,15 +18,36 @@ class Settings(BaseSettings):
     app_name: str = "bizintel"
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    database_url: str = "postgresql+psycopg://bizintel:bizintel@127.0.0.1:55432/bizintel"
-    redis_url: str = "redis://127.0.0.1:6379/0"
+    database_url: str = Field(
+        default="postgresql+psycopg://bizintel:bizintel@127.0.0.1:55432/bizintel",
+        validation_alias=AliasChoices("BIZINTEL_DATABASE_URL", "DATABASE_URL"),
+    )
+    redis_url: str = Field(
+        default="redis://127.0.0.1:6379/0",
+        validation_alias=AliasChoices("BIZINTEL_REDIS_URL", "REDIS_URL"),
+    )
     storage_backend: str = "local"
     storage_local_root: str = "data/object_store"
-    s3_endpoint: str | None = None
-    s3_bucket: str | None = None
-    s3_access_key_id: str | None = None
-    s3_secret_access_key: str | None = None
-    s3_region: str | None = None
+    s3_endpoint: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("BIZINTEL_S3_ENDPOINT", "ENDPOINT"),
+    )
+    s3_bucket: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("BIZINTEL_S3_BUCKET", "BUCKET"),
+    )
+    s3_access_key_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("BIZINTEL_S3_ACCESS_KEY_ID", "ACCESS_KEY_ID"),
+    )
+    s3_secret_access_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("BIZINTEL_S3_SECRET_ACCESS_KEY", "SECRET_ACCESS_KEY"),
+    )
+    s3_region: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("BIZINTEL_S3_REGION", "REGION"),
+    )
     user_agent: str = "bizintel-bot/0.1"
     http_timeout_seconds: float = 10.0
     fl_base_url: str = "https://sftp.floridados.gov"

@@ -25,7 +25,7 @@ from app.services.robots_guard import RobotsGuard
 from app.workers.broker import broker  # noqa: F401
 
 
-@dramatiq.actor(max_retries=5)
+@dramatiq.actor(max_retries=5, queue_name="website_contact_collect")
 def collect_public_contact_evidence(state: str, limit: int = 100) -> None:
     run_public_contact_collection(state, limit=limit, verified_only=True)
 

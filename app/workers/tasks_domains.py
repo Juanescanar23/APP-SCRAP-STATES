@@ -29,7 +29,7 @@ from app.services.site_identity import HttpSiteInspector, SiteInspector
 from app.workers.broker import broker  # noqa: F401
 
 
-@dramatiq.actor(max_retries=5)
+@dramatiq.actor(max_retries=5, queue_name="domain_resolve")
 def resolve_official_domain(state: str, limit: int = 250) -> None:
     metrics = run_domain_resolution(state, limit=limit)
     if metrics.domain_verified > 0:
@@ -38,7 +38,7 @@ def resolve_official_domain(state: str, limit: int = 250) -> None:
         collect_public_contact_evidence.send(state.upper(), limit)
 
 
-@dramatiq.actor(max_retries=5)
+@dramatiq.actor(max_retries=5, queue_name="domain_resolve")
 def resolve_domains(state: str) -> None:
     resolve_official_domain(state)
 
