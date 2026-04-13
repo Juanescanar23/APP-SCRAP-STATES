@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bizintel"
+version = "0.1.0"
+description = "Business identity and public contact evidence pipeline."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "alembic>=1.16.0",
+  "boto3>=1.39.0",
+  "dramatiq[redis]>=1.17.0",
+  "fastapi>=0.115.0",
+  "httpx[http2]>=0.28.0",
+  "pypdf>=5.4.0",
+  "psycopg[binary]>=3.2.0",
+  "pydantic-settings>=2.8.0",
+  "redis>=6.0.0",
+  "selectolax>=0.3.30",
+  "sqlalchemy>=2.0.39",
+  "uvicorn[standard]>=0.34.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.26.0",
+  "ruff>=0.11.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["app", "tests"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "N", "RUF", "UP"]

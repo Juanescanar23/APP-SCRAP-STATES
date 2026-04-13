@@ -1,0 +1,61 @@
+# bizintel
+
+Pipeline interno para ingestar registros empresariales públicos, resolver dominios oficiales y recolectar evidencia pública de contacto con trazabilidad completa.
+
+## Stack
+
+- `uv` para entorno y dependencias.
+- `FastAPI` para la API interna.
+- `SQLAlchemy 2` + `Alembic` para modelos y migraciones.
+- `PostgreSQL` + `psycopg 3` para persistencia.
+- `Redis` + `Dramatiq` para workers y reintentos.
+- `HTTPX` + `selectolax` para fetch y parse.
+- `Playwright` queda reservado como fallback fuera de este scaffold.
+
+## Estructura
+
+- `app/api`: rutas FastAPI para salud, entidades y review.
+- `app/connectors`: conectores de archivos, HTML y API.
+- `app/db`: modelos, sesión y migraciones.
+- `app/services`: normalización, scoring, robots y collector.
+- `app/workers`: broker y tareas del pipeline.
+- `tests`: pruebas unitarias mínimas.
+
+## Arranque local
+
+```bash
+cp .env.example .env
+uv sync --group dev
+docker-compose up -d postgres redis
+uv run alembic upgrade head
+uv run pytest -q
+uv run python -m app.cli resolve-domains --state FL --limit 50 --dry-run
+uv run python -m app.cli collect-evidence --state FL --limit 50 --verified-only --dry-run
+uv run python -m app.cli report-canary --state FL --hours 24
+uv run uvicorn app.main:app --reload
+```
+
+Notas:
+
+- PostgreSQL expone `127.0.0.1:55432` para evitar colisión con instalaciones locales que ya usen `5432`.
+- Si corres esto dentro de Codex CLI y `uv` no puede escribir en `~/.cache/uv`, usa `UV_CACHE_DIR=/tmp/uvcache` delante de los comandos de `uv`.
+- La prueba real contra Brave vive detrás de `BIZINTEL_BRAVE_SEARCH_API_KEY`; si no está configurada, `pytest` la salta.
+
+Worker:
+
+```bash
+uv run dramatiq app.workers.tasks_download app.workers.tasks_import app.workers.tasks_normalize app.workers.tasks_sunbiz app.workers.tasks_domains app.workers.tasks_evidence
+```
+
+## Notas de arquitectura
+
+- La staging es append-only y trazable por `job_run_id` + `source_checksum`.
+- Florida ya no depende de guardar el raw completo por fila en Postgres: `source_file` y `source_record_ref` guardan trazabilidad, mientras `company_registry_snapshot` y `company_event` guardan el dato canónico por archivo.
+- `source_file` usa identidad fuerte por checksum más clave lógica de archivo; eso evita colisiones entre quarterly `cordata.zip` de distintos cortes y mantiene replay idempotente.
+- `source_ingest_cursor` evita reprocesar feeds oficiales de Florida y `sunbiz_artifact` guarda HTML/PDF auditables con retry state.
+- `BusinessEntity`, `OfficialDomain` y `ContactEvidence` están separados por diseño.
+- Para Florida, el flujo correcto ahora es `source file -> record refs -> snapshots/eventos -> business_entity -> domain resolution -> public contact evidence`.
+- La operación real ya contempla `fl_download` para feeds oficiales y `fl_sunbiz_harvest` para expediente HTML/PDF antes de salir a web abierta.
+- `report-canary` separa `html_hit_rate`, `pdf_hit_rate_mature_cohort` y `pdf_pending_rate` para que la validación Sunbiz no mezcle cohortes recientes con cohortes maduras.
+- El collector solo opera sobre dominios verificados y páginas públicas allowlisted.
+- La evidencia pública conserva `source_url`, `source_hash` y estado de revisión.

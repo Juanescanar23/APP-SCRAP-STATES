@@ -1,0 +1,52 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: bizintel
+      POSTGRES_USER: bizintel
+      POSTGRES_PASSWORD: bizintel
+    ports:
+      - "55432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8000:8000"
+
+  worker:
+    build: .
+    command:
+      [
+        "uv",
+        "run",
+        "dramatiq",
+        "app.workers.tasks_download",
+        "app.workers.tasks_import",
+        "app.workers.tasks_normalize",
+        "app.workers.tasks_sunbiz",
+        "app.workers.tasks_domains",
+        "app.workers.tasks_evidence",
+      ]
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  postgres_data:

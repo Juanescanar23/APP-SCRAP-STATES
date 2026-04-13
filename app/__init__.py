@@ -1,0 +1,2 @@
+"""bizintel application package."""
+
