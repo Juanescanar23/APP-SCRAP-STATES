@@ -52,12 +52,9 @@ def classify_entity_cohort(
     reference_date: date | None = None,
     settings: Settings | None = None,
 ) -> EntityCohort:
-    active_on = latest_registry_activity_date(entity)
-    if active_on is None:
-        return EntityCohort.mature
-
     current_settings = settings or get_settings()
-    age_days = ((reference_date or date.today()) - active_on).days
+    observed_on = _first_seen_date(entity)
+    age_days = ((reference_date or date.today()) - observed_on).days
     if age_days <= current_settings.fl_fresh_cohort_days:
         return EntityCohort.fresh
     if age_days <= current_settings.fl_tempered_cohort_days:
@@ -122,3 +119,12 @@ def _timestamp_key(value: datetime) -> float:
     else:
         value = value.astimezone(UTC)
     return value.timestamp()
+
+
+def _first_seen_date(entity: BusinessEntity) -> date:
+    value = entity.first_seen_at
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    else:
+        value = value.astimezone(UTC)
+    return value.date()
