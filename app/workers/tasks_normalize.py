@@ -22,9 +22,14 @@ from app.workers.broker import broker  # noqa: F401
 
 FLORIDA_ENTITY_UPSERT_BATCH_SIZE = 1000
 FLORIDA_BUSINESS_ENTITY_NAMESPACE = uuid.UUID("c4312e8c-59a4-4791-9839-b23239c82450")
+LONG_RUNNING_TASK_LIMIT_MS = 60 * 60 * 1000
 
 
-@dramatiq.actor(max_retries=5, queue_name="fl_normalize")
+@dramatiq.actor(
+    max_retries=5,
+    queue_name="fl_normalize",
+    time_limit=LONG_RUNNING_TASK_LIMIT_MS,
+)
 def normalize_entities(
     state: str,
     job_run_id: str | None = None,

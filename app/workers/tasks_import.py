@@ -29,6 +29,7 @@ from app.workers.broker import broker  # noqa: F401
 
 FLORIDA_BATCH_SIZE = 1000
 SOURCE_RECORD_REF_NAMESPACE = uuid.UUID("f4df9077-71d0-4f6f-a65d-ec0b1de53fe0")
+LONG_RUNNING_TASK_LIMIT_MS = 60 * 60 * 1000
 
 
 def build_connector(state: str) -> BulkFileConnector:
@@ -59,7 +60,7 @@ def _resolve_source_record_ref_id(
     return existing_ref_ids.get(record_no) or _build_source_record_ref_id(source_file_id, record_no)
 
 
-@dramatiq.actor(max_retries=5)
+@dramatiq.actor(max_retries=5, time_limit=LONG_RUNNING_TASK_LIMIT_MS)
 def import_registry_drop(state: str, source_path: str) -> None:
     if state.upper() == "FL":
         job_run_id, source_file_id = _import_florida_registry_drop(Path(source_path))
@@ -76,7 +77,11 @@ def import_registry_drop(state: str, source_path: str) -> None:
     )
 
 
-@dramatiq.actor(max_retries=5, queue_name="fl_import")
+@dramatiq.actor(
+    max_retries=5,
+    queue_name="fl_import",
+    time_limit=LONG_RUNNING_TASK_LIMIT_MS,
+)
 def import_source_file(source_file_id: str) -> None:
     source_file_uuid = uuid.UUID(source_file_id)
     session = get_session_factory()()

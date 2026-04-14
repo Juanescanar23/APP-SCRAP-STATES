@@ -28,8 +28,14 @@ from app.services.sunbiz_harvest import (
 )
 from app.workers.broker import broker  # noqa: F401
 
+LONG_RUNNING_TASK_LIMIT_MS = 60 * 60 * 1000
 
-@dramatiq.actor(max_retries=5, queue_name="fl_sunbiz_harvest")
+
+@dramatiq.actor(
+    max_retries=5,
+    queue_name="fl_sunbiz_harvest",
+    time_limit=LONG_RUNNING_TASK_LIMIT_MS,
+)
 def fl_sunbiz_harvest(state: str = "FL", limit: int = 100) -> None:
     run_fl_sunbiz_harvest(state, limit=limit)
 

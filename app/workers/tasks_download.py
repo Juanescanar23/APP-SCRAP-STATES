@@ -27,8 +27,14 @@ from app.db.session import get_session_factory
 from app.services.object_store import get_object_store
 from app.workers.broker import broker  # noqa: F401
 
+LONG_RUNNING_TASK_LIMIT_MS = 60 * 60 * 1000
 
-@dramatiq.actor(max_retries=5, queue_name="fl_download")
+
+@dramatiq.actor(
+    max_retries=5,
+    queue_name="fl_download",
+    time_limit=LONG_RUNNING_TASK_LIMIT_MS,
+)
 def fl_download(
     feed_kind: str,
     file_date: str | None = None,
