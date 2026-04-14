@@ -2,101 +2,297 @@ from __future__ import annotations
 
 import html
 import uuid
+from datetime import date
+from typing import Annotated
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from app.services.ops_actions import (
+    queue_domain_enrichment,
+    queue_florida_daily_refresh,
+    queue_florida_official_refresh,
+    queue_florida_quarterly_refresh,
+    queue_verified_contact_collection,
+)
 from app.services.ops_console import (
     EXPORT_KIND_VALUES,
     STORAGE_KIND_VALUES,
     build_export_csv_bytes,
     build_ops_dashboard_context,
+    describe_export,
     get_storage_object,
     list_job_runs,
     list_pending_evidence_rows,
     list_review_queue_rows,
     list_source_files,
     list_sunbiz_artifacts,
-    preview_export_rows,
 )
 from app.services.sample_inspector import inspect_state_samples
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
+DISPLAY_HEADER_LABELS = {
+    "active_entities": "Entidades activas",
+    "archivos_completados": "Archivos completados",
+    "bucket_key": "Bucket key",
+    "cohort": "Cohorte",
+    "confidence": "Confianza",
+    "connector_kind": "Conector",
+    "contact_form_url": "Formulario de contacto",
+    "contact_page_url": "Pagina de contacto",
+    "created_at": "Creado",
+    "daily_jobs": "Jobs daily",
+    "domain_status": "Estado dominio",
+    "downloaded_at": "Descargado",
+    "evidence_kind": "Tipo evidencia",
+    "evidence_scope": "Clasificacion",
+    "external_filing_id": "ID oficial",
+    "fei_number": "FEI",
+    "file_date": "Fecha fuente",
+    "filename": "Archivo",
+    "filing_type": "Tipo filing",
+    "finished_at": "Finalizado",
+    "first_seen_at": "Primera vez visto",
+    "homepage_url": "Homepage",
+    "id": "ID",
+    "last_seen_at": "Ultima vez visto",
+    "last_transaction_date": "Ultima transaccion",
+    "latest_report_date": "Ultimo reporte",
+    "latest_report_year": "Ano ultimo reporte",
+    "legal_name": "Nombre legal",
+    "lista_shards": "Lista shards",
+    "mail_address_1": "Mail direccion 1",
+    "mail_address_2": "Mail direccion 2",
+    "mail_city": "Mail ciudad",
+    "mail_state": "Mail estado",
+    "mail_zip": "Mail zip",
+    "more_than_six_officers": "Mas de 6 officers",
+    "notes": "Notas",
+    "observed_at": "Observado",
+    "officers_count": "Cantidad officers",
+    "officers_json": "Officers",
+    "payload": "Payload",
+    "pending_review_items": "Review pendiente",
+    "principal_address_1": "Principal direccion 1",
+    "principal_address_2": "Principal direccion 2",
+    "principal_city": "Principal ciudad",
+    "principal_postal_code": "Principal codigo postal",
+    "principal_state": "Principal estado",
+    "processed_at": "Procesado",
+    "quarterly_jobs": "Jobs quarterly",
+    "quarterly_shard": "Shard quarterly",
+    "queue_kind": "Tipo queue",
+    "queued_jobs": "Jobs encolados",
+    "razon": "Razon",
+    "registros_totales": "Registros totales",
+    "registered_agent_address": "Direccion agente registrado",
+    "registered_agent_city": "Ciudad agente registrado",
+    "registered_agent_name": "Agente registrado",
+    "registered_agent_state": "Estado agente registrado",
+    "registered_agent_zip": "Zip agente registrado",
+    "row_count": "Filas",
+    "shards_completados": "Shards completados",
+    "source_checksum": "Checksum fuente",
+    "source_kind": "Tipo fuente",
+    "source_uri": "Fuente",
+    "source_url": "URL fuente",
+    "started_at": "Iniciado",
+    "state": "Estado",
+    "stats": "Metricas",
+    "status": "Estado",
+    "summary_rows": "Resumen",
+    "tipo_evidencia": "Tipo evidencia",
+    "tipo_queue": "Tipo queue",
+    "total_records": "Registros",
+    "ultima_file_date": "Ultima fecha fuente",
+    "ultimo_downloaded_at": "Ultima descarga",
+    "updated_at": "Actualizado",
+    "valor": "Valor",
+    "verified_domain": "Dominio verificado",
+    "verified_homepage_url": "Homepage verificada",
+    "primary_email": "Email primario",
+}
+
 
 @router.get("", response_class=HTMLResponse)
-def ops_dashboard(state: str = Query(default="FL", min_length=2, max_length=2)) -> HTMLResponse:
+def ops_dashboard(
+    state: str = Query(default="FL", min_length=2, max_length=2),
+    notice: str | None = Query(default=None),
+) -> HTMLResponse:
     context = build_ops_dashboard_context(state)
     cohort_report = context["cohort_report"]
+    source_summary = context.get(
+        "source_summary",
+        {
+            "active_entities": _sum_metric(cohort_report, "active_entities"),
+            "current_snapshots": _sum_metric(cohort_report, "active_entities"),
+            "quarterly_corporate_completed_shards": 0,
+            "quarterly_event_completed_shards": 0,
+            "latest_daily_corporate_date": None,
+            "summary_rows": [],
+        },
+    )
     canary_report = context["canary_report"]
 
     cards = [
-        ("Active Entities", _sum_metric(cohort_report, "active_entities"), "Florida activas."),
         (
-            "Pending Domains",
-            _sum_metric(cohort_report, "pending_domain_resolution"),
-            "Todavia sin dominio verificado.",
+            "Entidades oficiales activas",
+            source_summary["active_entities"],
+            "Base oficial visible hoy en la consola.",
         ),
         (
-            "Verified Domains",
+            "Snapshots oficiales",
+            source_summary["current_snapshots"],
+            "Snapshots cargados desde el bulk oficial.",
+        ),
+        (
+            "Quarterly corporativo",
+            f"{source_summary['quarterly_corporate_completed_shards']}/10",
+            "Shards corporativos completos.",
+        ),
+        (
+            "Quarterly eventos",
+            f"{source_summary['quarterly_event_completed_shards']}/10",
+            "Shards de eventos completos.",
+        ),
+        (
+            "Dominios verificados",
             _sum_metric(cohort_report, "verified_entities"),
-            "Con dominio oficial verificado.",
+            "Empresas con dominio oficial verificado.",
         ),
         (
-            "Website Evidence",
+            "Contactos web observados",
             _sum_metric(cohort_report, "website_contact_observed"),
-            "Con contacto web observado.",
-        ),
-        ("Pending Review", context["pending_review_items"], "Items en review queue."),
-        (
-            "Pending Evidence",
-            context["pending_evidence_review"],
-            "Evidencia pendiente de revision.",
+            "Empresas con contacto publico observado.",
         ),
         (
-            "Source Files 24h",
-            canary_report.source_files_completed,
-            "Archivos oficiales completados.",
+            "Ultimo daily corporativo",
+            source_summary["latest_daily_corporate_date"] or "pendiente",
+            "Fecha mas reciente cargada para daily corporativo.",
         ),
-        ("Go Ready", "yes" if canary_report.go_ready else "no", "Semaforo operativo."),
+        (
+            "Go ready",
+            "si" if canary_report.go_ready else "no",
+            "Semaforo tecnico del pipeline.",
+        ),
     ]
 
-    body = "\n".join(
-        [
-            _render_header(
-                "Ops Console",
-                f"Estado {html.escape(str(context['state']))}. Consola operativa para Florida v1.",
+    body_parts = [
+        _render_header(
+            "Base oficial Florida",
+            (
+                f"Estado {html.escape(str(context['state']))}. "
+                "Primero base oficial; despues enriquecimiento web."
             ),
-            _render_nav(state),
-            _render_card_grid(cards),
-            _render_section(
-                "Latest Run",
-                _render_key_value_list(context["latest_run"] or {"status": "no_runs"}),
-            ),
-            _render_section(
-                "Pending Domain Samples",
-                _render_table(context["pending_domain_samples"]),
-            ),
-            _render_section(
-                "Verified Domain Samples",
-                _render_table(context["verified_domain_samples"]),
-            ),
-            _render_section(
-                "Website Evidence Samples",
-                _render_table(context["website_evidence_samples"]),
-            ),
-            _render_link_row(
-                [
-                    ("Runs", _url("/ops/runs", state=state)),
-                    ("Review", _url("/ops/review", state=state)),
-                    ("Artifacts", _url("/ops/artifacts", state=state)),
-                    ("Exports", _url("/ops/exports", state=state)),
-                ]
-            ),
-        ]
+        ),
+        _render_notice(notice),
+        _render_nav(state),
+        _render_action_panel(state),
+        _render_card_grid(cards),
+        _render_section(
+            "Estado de carga oficial",
+            _render_table(source_summary["summary_rows"]),
+        ),
+        _render_section(
+            "Ultimo job",
+            _render_key_value_list(context["latest_run"] or {"status": "sin_jobs"}),
+        ),
+        _render_section(
+            "Vista previa base oficial",
+            _render_table(context["empresas_preview"]),
+        ),
+        _render_section(
+            "Vista previa contactos primarios",
+            _render_table(context["contactos_primary_preview"]),
+        ),
+        _render_section(
+            "Archivos oficiales recientes",
+            _render_table(context["recent_source_files"]),
+        ),
+    ]
+    body = "\n".join(part for part in body_parts if part)
+    return HTMLResponse(_render_page("Base oficial Florida", body))
+
+
+@router.post("/actions/florida-oficial")
+def ops_action_florida_oficial(
+    state: str = Query(default="FL", min_length=2, max_length=2),
+) -> RedirectResponse:
+    try:
+        result = queue_florida_official_refresh(state, daily_date=date.today())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    notice = (
+        f"Florida oficial encolada: {result['quarterly_jobs']} jobs quarterly y "
+        f"{result['daily_jobs']} jobs daily para {result['daily_date']}."
     )
-    return HTMLResponse(_render_page("Ops Console", body))
+    return _redirect_dashboard(state, notice)
+
+
+@router.post("/actions/florida-quarterly")
+def ops_action_florida_quarterly(
+    state: str = Query(default="FL", min_length=2, max_length=2),
+    quarterly_shard: int | None = Query(default=None, ge=0, le=9),
+) -> RedirectResponse:
+    try:
+        result = queue_florida_quarterly_refresh(state, quarterly_shard=quarterly_shard)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if quarterly_shard is None:
+        notice = f"Quarterly Florida encolado: {result['queued_jobs']} jobs para shards 0..9."
+    else:
+        notice = f"Quarterly Florida shard {quarterly_shard} encolado."
+    return _redirect_dashboard(state, notice)
+
+
+@router.post("/actions/florida-daily")
+def ops_action_florida_daily(
+    state: str = Query(default="FL", min_length=2, max_length=2),
+    file_date: Annotated[date | None, Query()] = None,
+) -> RedirectResponse:
+    selected_date = file_date or date.today()
+    try:
+        result = queue_florida_daily_refresh(state, file_date=selected_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    notice = f"Daily Florida encolado: {result['queued_jobs']} jobs para {result['file_date']}."
+    return _redirect_dashboard(state, notice)
+
+
+@router.post("/actions/enriquecer-contactos")
+def ops_action_enriquecer_contactos(
+    state: str = Query(default="FL", min_length=2, max_length=2),
+    cohort: str = Query(default="priority"),
+    include_fresh: bool = Query(default=True),
+) -> RedirectResponse:
+    result = queue_domain_enrichment(state, cohort=cohort, include_fresh=include_fresh)
+    scope = "incluyendo fresh" if include_fresh else "sin fresh"
+    notice = f"Resolver dominios encolado para cohorte {result['cohort']} ({scope})."
+    return _redirect_dashboard(state, notice)
+
+
+@router.post("/actions/recolectar-contactos")
+def ops_action_recolectar_contactos(
+    state: str = Query(default="FL", min_length=2, max_length=2),
+    limit: int = Query(default=250, ge=1, le=5000),
+    cohort: str = Query(default="priority"),
+    include_fresh: bool = Query(default=True),
+) -> RedirectResponse:
+    result = queue_verified_contact_collection(
+        state,
+        limit=limit,
+        cohort=cohort,
+        include_fresh=include_fresh,
+    )
+    scope = "incluyendo fresh" if include_fresh else "sin fresh"
+    notice = (
+        f"Recolectar evidencia encolado para dominios verificados: "
+        f"cohorte {result['cohort']} ({scope}), limite {result['limit']}."
+    )
+    return _redirect_dashboard(state, notice)
 
 
 @router.get("/entities", response_class=HTMLResponse)
@@ -117,14 +313,30 @@ def ops_entities(
     body = "\n".join(
         [
             _render_header(
-                "Entity Samples",
+                "Muestras operativas",
                 f"{html.escape(state.upper())} · {html.escape(kind)} · {html.escape(cohort)}",
             ),
             _render_nav(state),
+            _render_link_row(
+                [
+                    (
+                        "Pendientes dominio",
+                        _url("/ops/entities", state=state, kind="pending-domain", cohort=cohort),
+                    ),
+                    (
+                        "Dominios verificados",
+                        _url("/ops/entities", state=state, kind="verified-domain", cohort=cohort),
+                    ),
+                    (
+                        "Evidencia web",
+                        _url("/ops/entities", state=state, kind="website-evidence", cohort=cohort),
+                    ),
+                ]
+            ),
             _render_table(rows),
         ]
     )
-    return HTMLResponse(_render_page("Entity Samples", body))
+    return HTMLResponse(_render_page("Muestras operativas", body))
 
 
 @router.get("/runs", response_class=HTMLResponse)
@@ -135,12 +347,12 @@ def ops_runs(
     rows = list_job_runs(state, limit=limit)
     body = "\n".join(
         [
-            _render_header("Job Runs", f"Ultimos jobs para {html.escape(state.upper())}."),
+            _render_header("Ejecuciones", f"Ultimos jobs para {html.escape(state.upper())}."),
             _render_nav(state),
             _render_table(rows),
         ]
     )
-    return HTMLResponse(_render_page("Job Runs", body))
+    return HTMLResponse(_render_page("Ejecuciones", body))
 
 
 @router.get("/review", response_class=HTMLResponse)
@@ -153,15 +365,15 @@ def ops_review(
     body = "\n".join(
         [
             _render_header(
-                "Review Queue",
+                "Revision",
                 f"Pendientes de revision para {html.escape(state.upper())}.",
             ),
             _render_nav(state),
-            _render_section("Queue Items", _render_table(review_rows)),
-            _render_section("Evidence Review", _render_table(evidence_rows)),
+            _render_section("Queue de revision", _render_table(review_rows)),
+            _render_section("Evidencia pendiente", _render_table(evidence_rows)),
         ]
     )
-    return HTMLResponse(_render_page("Review Queue", body))
+    return HTMLResponse(_render_page("Revision", body))
 
 
 @router.get("/artifacts", response_class=HTMLResponse)
@@ -182,15 +394,15 @@ def ops_artifacts(
     body = "\n".join(
         [
             _render_header(
-                "Artifacts",
-                f"Source files y artifacts para {html.escape(state.upper())}.",
+                "Artefactos",
+                f"Archivos oficiales y artefactos para {html.escape(state.upper())}.",
             ),
             _render_nav(state),
-            _render_section("Source Files", _render_table(source_files)),
-            _render_section("Sunbiz Artifacts", _render_table(sunbiz_artifacts)),
+            _render_section("Source files", _render_table(source_files)),
+            _render_section("Sunbiz lane B", _render_table(sunbiz_artifacts)),
         ]
     )
-    return HTMLResponse(_render_page("Artifacts", body))
+    return HTMLResponse(_render_page("Artefactos", body))
 
 
 @router.get("/exports", response_class=HTMLResponse)
@@ -201,41 +413,89 @@ def ops_exports(
     exclude_fresh: bool = False,
 ) -> HTMLResponse:
     include_fresh = not exclude_fresh
-    identities = preview_export_rows(
-        "identities",
+    base_oficial = describe_export(
+        "base_oficial",
         state=state,
         cohort=cohort,
         include_fresh=include_fresh,
         limit=limit,
     )
-    contacts = preview_export_rows(
-        "contacts",
+    empresas = describe_export(
+        "empresas",
         state=state,
         cohort=cohort,
         include_fresh=include_fresh,
         limit=limit,
     )
-    identity_csv = _url("/ops/exports/identities.csv", state=state, cohort=cohort)
-    contact_csv = _url("/ops/exports/contacts.csv", state=state, cohort=cohort)
-    if exclude_fresh:
-        identity_csv += "&exclude_fresh=1"
-        contact_csv += "&exclude_fresh=1"
+    contactos_primary = describe_export(
+        "contactos_primary",
+        state=state,
+        cohort=cohort,
+        include_fresh=include_fresh,
+        limit=limit,
+    )
+    contactos_evidence = describe_export(
+        "contactos_evidence",
+        state=state,
+        cohort=cohort,
+        include_fresh=include_fresh,
+        limit=limit,
+    )
+
+    export_links = [
+        (
+            "Descargar base_oficial.csv",
+            _url(
+                "/ops/exports/base_oficial.csv",
+                state=state,
+                cohort=cohort,
+                exclude_fresh=int(exclude_fresh),
+            ),
+        ),
+        (
+            "Descargar empresas.csv",
+            _url(
+                "/ops/exports/empresas.csv",
+                state=state,
+                cohort=cohort,
+                exclude_fresh=int(exclude_fresh),
+            ),
+        ),
+        (
+            "Descargar contactos_primary.csv",
+            _url(
+                "/ops/exports/contactos_primary.csv",
+                state=state,
+                cohort=cohort,
+                exclude_fresh=int(exclude_fresh),
+            ),
+        ),
+        (
+            "Descargar contactos_evidence.csv",
+            _url(
+                "/ops/exports/contactos_evidence.csv",
+                state=state,
+                cohort=cohort,
+                exclude_fresh=int(exclude_fresh),
+            ),
+        ),
+    ]
 
     body = "\n".join(
         [
-            _render_header("Exports", f"Preview y descarga para {html.escape(state.upper())}."),
-            _render_nav(state),
-            _render_link_row(
-                [
-                    ("Download identities.csv", identity_csv),
-                    ("Download contacts.csv", contact_csv),
-                ]
+            _render_header(
+                "Exportaciones",
+                f"Previews y descargas para {html.escape(state.upper())}.",
             ),
-            _render_section("Identity Preview", _render_table(identities)),
-            _render_section("Contact Preview", _render_table(contacts)),
+            _render_nav(state),
+            _render_link_row(export_links),
+            _render_export_preview("Base oficial", base_oficial),
+            _render_export_preview("Empresas canonicas", empresas),
+            _render_export_preview("Contactos primarios", contactos_primary),
+            _render_export_preview("Evidencia de contacto", contactos_evidence),
         ]
     )
-    return HTMLResponse(_render_page("Exports", body))
+    return HTMLResponse(_render_page("Exportaciones", body))
 
 
 @router.get("/exports/{export_kind}.csv")
@@ -278,6 +538,10 @@ def ops_storage_object(storage_kind: str, object_id: uuid.UUID) -> Response:
     )
 
 
+def _redirect_dashboard(state: str, notice: str) -> RedirectResponse:
+    return RedirectResponse(_url("/ops", state=state, notice=notice), status_code=303)
+
+
 def _render_page(title: str, body: str) -> str:
     css = """
     :root {
@@ -289,6 +553,7 @@ def _render_page(title: str, body: str) -> str:
       --accent: #204c3c;
       --accent-soft: #e2f1e9;
       --warn: #8c3d12;
+      --warn-soft: #fff1e9;
       --mono: "SFMono-Regular", "Menlo", monospace;
       --sans: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
     }
@@ -303,7 +568,7 @@ def _render_page(title: str, body: str) -> str:
       font-family: var(--sans);
     }
     main {
-      max-width: 1380px;
+      max-width: 1440px;
       margin: 0 auto;
       display: grid;
       gap: 24px;
@@ -316,14 +581,14 @@ def _render_page(title: str, body: str) -> str:
       box-shadow: 0 16px 48px rgba(34, 25, 12, 0.07);
     }
     h1, h2, h3 { margin: 0 0 8px; }
-    p, li, td, th, a, span { font-size: 15px; }
+    p, li, td, th, a, span, button { font-size: 15px; }
     .muted { color: var(--muted); }
-    .nav, .links {
+    .nav, .links, .actions, .shards {
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
     }
-    .nav a, .links a {
+    .nav a, .links a, .button-link, button {
       display: inline-flex;
       align-items: center;
       gap: 6px;
@@ -333,11 +598,20 @@ def _render_page(title: str, body: str) -> str:
       color: var(--ink);
       text-decoration: none;
       background: #fff;
+      cursor: pointer;
+      font-family: inherit;
     }
-    .nav a:hover, .links a:hover { border-color: var(--accent); color: var(--accent); }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.secondary { background: #fff; color: var(--ink); }
+    .nav a:hover, .links a:hover, button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    button.primary:hover { color: #fff; opacity: 0.92; }
+    form { margin: 0; }
     .cards {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
       gap: 16px;
     }
     .card {
@@ -388,9 +662,25 @@ def _render_page(title: str, body: str) -> str:
       background: #fffdfa;
     }
     .stack { display: grid; gap: 16px; }
+    .notice {
+      background: var(--warn-soft);
+      border: 1px solid #ebc2aa;
+      color: var(--warn);
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .meta span {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: #fff;
+    }
     """
     return f"""<!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -412,18 +702,93 @@ def _render_header(title: str, subtitle: str) -> str:
     )
 
 
+def _render_notice(notice: str | None) -> str:
+    if not notice:
+        return ""
+    return (
+        '<section class="panel notice">'
+        f"<strong>{html.escape(notice)}</strong>"
+        "</section>"
+    )
+
+
 def _render_nav(state: str) -> str:
     links = [
-        ("Dashboard", _url("/ops", state=state)),
-        ("Entities", _url("/ops/entities", state=state)),
-        ("Runs", _url("/ops/runs", state=state)),
-        ("Review", _url("/ops/review", state=state)),
-        ("Artifacts", _url("/ops/artifacts", state=state)),
-        ("Exports", _url("/ops/exports", state=state)),
+        ("Base oficial", _url("/ops", state=state)),
+        ("Muestras", _url("/ops/entities", state=state)),
+        ("Ejecuciones", _url("/ops/runs", state=state)),
+        ("Revision", _url("/ops/review", state=state)),
+        ("Artefactos", _url("/ops/artifacts", state=state)),
+        ("Exportaciones", _url("/ops/exports", state=state)),
     ]
     return '<section class="panel"><nav class="nav">' + "".join(
         f'<a href="{html.escape(href)}">{html.escape(label)}</a>' for label, href in links
     ) + "</nav></section>"
+
+
+def _render_action_panel(state: str) -> str:
+    shard_buttons = "".join(
+        _render_action_form(
+            label=f"Shard {shard}",
+            action=_url("/ops/actions/florida-quarterly", state=state, quarterly_shard=shard),
+            primary=False,
+        )
+        for shard in range(10)
+    )
+    return (
+        '<section class="panel stack">'
+        "<h2>Acciones</h2>"
+        + '<div class="actions">'
+        + _render_action_form(
+            "Cargar Florida oficial",
+            _url("/ops/actions/florida-oficial", state=state),
+            primary=True,
+        )
+        + _render_action_form(
+            "Ejecutar quarterly 0..9",
+            _url("/ops/actions/florida-quarterly", state=state),
+            primary=False,
+        )
+        + _render_action_form(
+            "Ejecutar daily de hoy",
+            _url("/ops/actions/florida-daily", state=state),
+            primary=False,
+        )
+        + _render_action_form(
+            "Enriquecer contactos",
+            _url(
+                "/ops/actions/enriquecer-contactos",
+                state=state,
+                cohort="priority",
+                include_fresh=1,
+            ),
+            primary=False,
+        )
+        + _render_action_form(
+            "Recolectar sobre verificados",
+            _url(
+                "/ops/actions/recolectar-contactos",
+                state=state,
+                cohort="priority",
+                include_fresh=1,
+                limit=250,
+            ),
+            primary=False,
+        )
+        + "</div>"
+        + "<h3>Quarterly por shard</h3>"
+        + f'<div class="shards">{shard_buttons}</div>'
+        + "</section>"
+    )
+
+
+def _render_action_form(label: str, action: str, *, primary: bool) -> str:
+    class_name = "primary" if primary else "secondary"
+    return (
+        f'<form method="post" action="{html.escape(action)}">'
+        f'<button class="{class_name}" type="submit">{html.escape(label)}</button>'
+        "</form>"
+    )
 
 
 def _render_card_grid(cards: list[tuple[str, object, str]]) -> str:
@@ -450,16 +815,33 @@ def _render_link_row(items: list[tuple[str, str]]) -> str:
     ) + "</div></section>"
 
 
+def _render_export_preview(title: str, payload: dict[str, object]) -> str:
+    meta = (
+        '<div class="meta">'
+        f"<span>Filas: {html.escape(str(payload['row_count']))}</span>"
+        f"<span>Columnas: {html.escape(str(len(payload['columns'])))}</span>"
+        "</div>"
+    )
+    return _render_section(title, meta + _render_table(payload["rows"]))
+
+
 def _render_key_value_list(payload: dict[str, object]) -> str:
     return _render_table([payload])
 
 
 def _render_table(rows: list[dict[str, object]]) -> str:
     if not rows:
-        return '<div class="empty">No rows.</div>'
+        return '<div class="empty">Sin filas.</div>'
 
     headers = list(rows[0].keys())
-    head = "".join(f"<th>{html.escape(header)}</th>" for header in headers)
+    head = "".join(
+        (
+            "<th>"
+            f"{html.escape(DISPLAY_HEADER_LABELS.get(header, header.replace('_', ' ').title()))}"
+            "</th>"
+        )
+        for header in headers
+    )
     body_rows = []
     for row in rows:
         cells = []
@@ -484,7 +866,7 @@ def _sum_metric(report, field_name: str) -> int:
 
 
 def _url(path: str, **params: object) -> str:
-    compact = {key: value for key, value in params.items() if value not in {None, ""}}
+    compact = {key: value for key, value in params.items() if value not in {None, "", False}}
     if not compact:
         return path
     return f"{path}?{urlencode(compact)}"
