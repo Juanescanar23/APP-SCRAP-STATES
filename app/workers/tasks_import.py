@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import dramatiq
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.connectors.bulk_file import BulkFileConnector
@@ -36,6 +37,26 @@ def build_connector(state: str) -> BulkFileConnector:
 
 def _build_source_record_ref_id(source_file_id: uuid.UUID, record_no: int) -> uuid.UUID:
     return uuid.uuid5(SOURCE_RECORD_REF_NAMESPACE, f"{source_file_id}:{record_no}")
+
+
+def _load_existing_source_record_ref_ids(
+    session,
+    source_file_id: uuid.UUID,
+) -> dict[int, uuid.UUID]:
+    rows = session.execute(
+        select(SourceRecordRef.record_no, SourceRecordRef.id).where(
+            SourceRecordRef.source_file_id == source_file_id,
+        )
+    ).all()
+    return {record_no: ref_id for record_no, ref_id in rows}
+
+
+def _resolve_source_record_ref_id(
+    source_file_id: uuid.UUID,
+    record_no: int,
+    existing_ref_ids: dict[int, uuid.UUID],
+) -> uuid.UUID:
+    return existing_ref_ids.get(record_no) or _build_source_record_ref_id(source_file_id, record_no)
 
 
 @dramatiq.actor(max_retries=5)
@@ -182,12 +203,18 @@ def _import_florida_registry_drop(source_path: Path) -> tuple[uuid.UUID, uuid.UU
         session.add(source_file)
         session.flush()
 
+        existing_ref_ids = _load_existing_source_record_ref_ids(session, source_file.id)
         ref_values: list[dict[str, object]] = []
         snapshot_values: list[dict[str, object]] = []
         event_values: list[dict[str, object]] = []
 
         for record in iter_source_records(source_path):
-            ref_id = _build_source_record_ref_id(source_file.id, record.record_no)
+            ref_id = _resolve_source_record_ref_id(
+                source_file.id,
+                record.record_no,
+                existing_ref_ids,
+            )
+            existing_ref_ids.setdefault(record.record_no, ref_id)
             stats["record_count"] += 1
 
             ref_value = {
@@ -332,12 +359,18 @@ def _import_existing_florida_source_file(source_file_id: uuid.UUID, source_path:
         session.add(job_run)
         session.flush()
 
+        existing_ref_ids = _load_existing_source_record_ref_ids(session, source_file.id)
         ref_values: list[dict[str, object]] = []
         snapshot_values: list[dict[str, object]] = []
         event_values: list[dict[str, object]] = []
 
         for record in iter_source_records(source_path, quarterly_shard=quarterly_shard):
-            ref_id = _build_source_record_ref_id(source_file.id, record.record_no)
+            ref_id = _resolve_source_record_ref_id(
+                source_file.id,
+                record.record_no,
+                existing_ref_ids,
+            )
+            existing_ref_ids.setdefault(record.record_no, ref_id)
             stats["record_count"] += 1
             ref_value = {
                 "id": ref_id,
