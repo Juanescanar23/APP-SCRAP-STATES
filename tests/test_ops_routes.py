@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 import app.api.routes_ops as routes_ops
 from app.main import create_app
 from app.services.cohort_report import CohortMetrics, CohortReport
@@ -121,3 +123,67 @@ def test_ops_action_florida_oficial_redirects_with_notice(monkeypatch) -> None:
 
     assert response.status_code == 303
     assert "/ops?state=FL&notice=" in response.headers["location"]
+
+
+def test_ops_storage_source_file_renders_html_preview(monkeypatch) -> None:
+    app = create_app()
+    client = TestClient(app)
+    source_file_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        routes_ops,
+        "build_source_file_preview",
+        lambda object_id: {
+            "metadata": {
+                "id": str(object_id),
+                "state": "FL",
+                "filename": "20260408c.txt",
+                "source_kind": "daily_corporate",
+                "bucket_key": "raw/fl/daily/20260408c.txt",
+            },
+            "parsed_rows": [
+                {
+                    "record_no": 1,
+                    "document_number": "L26000184490",
+                    "company_name": "00 PIZZA LLC",
+                    "parse_status": "parsed",
+                }
+            ],
+            "raw_rows": [
+                {
+                    "member_name": "20260408c.txt",
+                    "line_no": 1,
+                    "content": "L2600018449000 PIZZA LLC",
+                }
+            ],
+        },
+    )
+
+    response = client.get(f"/ops/storage/source-file/{source_file_id}")
+
+    assert response.status_code == 200
+    assert "Archivo oficial Florida" in response.text
+    assert "00 PIZZA LLC" in response.text
+    assert "Descargar archivo crudo" in response.text
+
+
+def test_ops_storage_download_returns_raw_payload(monkeypatch) -> None:
+    app = create_app()
+    client = TestClient(app)
+    source_file_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        routes_ops,
+        "get_storage_object",
+        lambda storage_kind, object_id: (
+            "20260408c.txt",
+            "text/plain; charset=utf-8",
+            b"raw payload",
+        ),
+    )
+
+    response = client.get(f"/ops/storage/source-file/{source_file_id}?download=1")
+
+    assert response.status_code == 200
+    assert response.text == "raw payload"
+    assert 'attachment; filename="20260408c.txt"' == response.headers["content-disposition"]

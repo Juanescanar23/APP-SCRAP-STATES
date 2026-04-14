@@ -21,6 +21,7 @@ from app.services.ops_console import (
     STORAGE_KIND_VALUES,
     build_export_csv_bytes,
     build_ops_dashboard_context,
+    build_source_file_preview,
     describe_export,
     get_storage_object,
     list_job_runs,
@@ -35,9 +36,12 @@ router = APIRouter(prefix="/ops", tags=["ops"])
 
 DISPLAY_HEADER_LABELS = {
     "active_entities": "Entidades activas",
+    "archive_members": "Miembros del archivo",
     "archivos_completados": "Archivos completados",
+    "byte_offset": "Byte offset",
     "bucket_key": "Bucket key",
     "cohort": "Cohorte",
+    "company_name": "Nombre empresa",
     "confidence": "Confianza",
     "connector_kind": "Conector",
     "contact_form_url": "Formulario de contacto",
@@ -52,11 +56,18 @@ DISPLAY_HEADER_LABELS = {
     "fei_number": "FEI",
     "file_date": "Fecha fuente",
     "filename": "Archivo",
+    "filing_date": "Fecha filing",
     "filing_type": "Tipo filing",
     "finished_at": "Finalizado",
     "first_seen_at": "Primera vez visto",
+    "effective_date": "Fecha efectiva",
+    "error_code": "Codigo error",
+    "event_code": "Codigo evento",
+    "event_description": "Descripcion evento",
+    "event_sequence": "Secuencia evento",
     "homepage_url": "Homepage",
     "id": "ID",
+    "is_delta": "Es delta",
     "last_seen_at": "Ultima vez visto",
     "last_transaction_date": "Ultima transaccion",
     "latest_report_date": "Ultimo reporte",
@@ -68,6 +79,7 @@ DISPLAY_HEADER_LABELS = {
     "mail_city": "Mail ciudad",
     "mail_state": "Mail estado",
     "mail_zip": "Mail zip",
+    "member_name": "Member",
     "more_than_six_officers": "Mas de 6 officers",
     "notes": "Notas",
     "observed_at": "Observado",
@@ -86,6 +98,8 @@ DISPLAY_HEADER_LABELS = {
     "queue_kind": "Tipo queue",
     "queued_jobs": "Jobs encolados",
     "razon": "Razon",
+    "record_length": "Longitud registro",
+    "record_no": "Registro",
     "registros_totales": "Registros totales",
     "registered_agent_address": "Direccion agente registrado",
     "registered_agent_city": "Ciudad agente registrado",
@@ -94,6 +108,7 @@ DISPLAY_HEADER_LABELS = {
     "registered_agent_zip": "Zip agente registrado",
     "row_count": "Filas",
     "shards_completados": "Shards completados",
+    "size_bytes": "Tamano bytes",
     "source_checksum": "Checksum fuente",
     "source_kind": "Tipo fuente",
     "source_uri": "Fuente",
@@ -113,6 +128,8 @@ DISPLAY_HEADER_LABELS = {
     "verified_domain": "Dominio verificado",
     "verified_homepage_url": "Homepage verificada",
     "primary_email": "Email primario",
+    "parse_status": "Estado parseo",
+    "line_no": "Linea",
 }
 
 
@@ -521,9 +538,56 @@ def ops_export_csv(
 
 
 @router.get("/storage/{storage_kind}/{object_id}")
-def ops_storage_object(storage_kind: str, object_id: uuid.UUID) -> Response:
+def ops_storage_object(
+    storage_kind: str,
+    object_id: uuid.UUID,
+    download: bool = Query(default=False),
+) -> Response:
     if storage_kind not in STORAGE_KIND_VALUES:
         raise HTTPException(status_code=404, detail="Storage object not found.")
+
+    if storage_kind == "source-file" and not download:
+        try:
+            preview = build_source_file_preview(object_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        state = str(preview["metadata"].get("state") or "FL")
+        body = "\n".join(
+            [
+                _render_header(
+                    "Archivo oficial Florida",
+                    f"{html.escape(str(preview['metadata'].get('filename') or 'source-file'))} · "
+                    f"{html.escape(str(preview['metadata'].get('source_kind') or ''))}",
+                ),
+                _render_nav(state),
+                _render_link_row(
+                    [
+                        ("Volver a artefactos", _url("/ops/artifacts", state=state)),
+                        (
+                            "Descargar archivo crudo",
+                            _url(f"/ops/storage/source-file/{object_id}", download=1),
+                        ),
+                    ]
+                ),
+                _render_section(
+                    "Metadata del archivo",
+                    _render_vertical_key_value_table(preview["metadata"]),
+                ),
+                _render_section(
+                    "Vista previa parseada",
+                    _render_table(preview["parsed_rows"]),
+                ),
+                _render_section(
+                    "Lineas crudas",
+                    _render_raw_preview_table(preview["raw_rows"]),
+                ),
+            ]
+        )
+        return HTMLResponse(_render_page("Archivo oficial Florida", body))
+
     try:
         filename, media_type, payload = get_storage_object(storage_kind, object_id)
     except LookupError as exc:
@@ -534,7 +598,13 @@ def ops_storage_object(storage_kind: str, object_id: uuid.UUID) -> Response:
     return Response(
         content=payload,
         media_type=media_type,
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{filename}"'
+                if download
+                else f'inline; filename="{filename}"'
+            )
+        },
     )
 
 
@@ -631,8 +701,10 @@ def _render_page(title: str, body: str) -> str:
       font-size: 12px;
     }
     .card .value { font-size: 30px; font-weight: 700; margin: 10px 0 6px; }
+    .table-wrap { overflow-x: auto; }
     table {
-      width: 100%;
+      width: max-content;
+      min-width: 100%;
       border-collapse: collapse;
       overflow: hidden;
       border-radius: 14px;
@@ -657,6 +729,18 @@ def _render_page(title: str, body: str) -> str:
       font-size: 12px;
       white-space: pre-wrap;
       word-break: break-word;
+    }
+    .kv-table { width: 100%; min-width: 100%; }
+    .kv-table th {
+      width: 260px;
+      white-space: nowrap;
+    }
+    .raw-table pre.raw-block {
+      margin: 0;
+      white-space: pre;
+      word-break: normal;
+      overflow-x: auto;
+      max-width: 100%;
     }
     .empty {
       padding: 18px;
@@ -858,10 +942,51 @@ def _render_table(rows: list[dict[str, object]]) -> str:
             cells.append(f"<td>{rendered}</td>")
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
     return (
-        "<table>"
+        '<div class="table-wrap"><table>'
         f"<thead><tr>{head}</tr></thead>"
         f"<tbody>{''.join(body_rows)}</tbody>"
-        "</table>"
+        "</table></div>"
+    )
+
+
+def _render_vertical_key_value_table(payload: dict[str, object]) -> str:
+    rows = []
+    for key, value in payload.items():
+        label = DISPLAY_HEADER_LABELS.get(key, key.replace("_", " ").title())
+        if isinstance(value, str) and value.startswith(("http://", "https://", "/ops/")):
+            rendered = f'<a href="{html.escape(value)}">{html.escape(value)}</a>'
+        else:
+            rendered = f"<code>{html.escape(str(value))}</code>"
+        rows.append(
+            "<tr>"
+            f"<th>{html.escape(label)}</th>"
+            f"<td>{rendered}</td>"
+            "</tr>"
+        )
+    return (
+        '<div class="table-wrap"><table class="kv-table">'
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table></div>"
+    )
+
+
+def _render_raw_preview_table(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return '<div class="empty">Sin lineas para mostrar.</div>'
+    body_rows = []
+    for row in rows:
+        body_rows.append(
+            "<tr>"
+            f"<td><code>{html.escape(str(row.get('member_name')))}</code></td>"
+            f"<td><code>{html.escape(str(row.get('line_no')))}</code></td>"
+            f"<td><pre class=\"raw-block\">{html.escape(str(row.get('content')))}</pre></td>"
+            "</tr>"
+        )
+    return (
+        '<div class="table-wrap"><table class="raw-table">'
+        "<thead><tr><th>Member</th><th>Linea</th><th>Contenido crudo</th></tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table></div>"
     )
 
 

@@ -7,10 +7,18 @@ import mimetypes
 import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
+from itertools import islice
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import urlparse
 
 from sqlalchemy import func, select
 
+from app.connectors.florida.parser import (
+    iter_binary_members,
+    iter_source_records,
+    list_archive_members_from_bytes,
+)
 from app.db.models import (
     BusinessEntity,
     CompanyRegistrySnapshot,
@@ -48,6 +56,54 @@ EXPORT_KIND_ALIASES = {
 EXPORT_KIND_VALUES = CANONICAL_EXPORT_KIND_VALUES + tuple(EXPORT_KIND_ALIASES.keys())
 STORAGE_KIND_VALUES = ("source-file", "sunbiz-artifact")
 LEGAL_PAGE_HINTS = ("privacy", "terms", "legal")
+SOURCE_FILE_PREVIEW_FIELDS = {
+    SourceFileKind.daily_corporate: (
+        "document_number",
+        "company_name",
+        "status",
+        "filing_type",
+        "filing_date",
+        "principal_city",
+        "principal_state",
+        "registered_agent_name",
+        "latest_report_year",
+        "latest_report_date",
+    ),
+    SourceFileKind.quarterly_corporate: (
+        "document_number",
+        "company_name",
+        "status",
+        "filing_type",
+        "filing_date",
+        "principal_city",
+        "principal_state",
+        "registered_agent_name",
+        "latest_report_year",
+        "latest_report_date",
+    ),
+    SourceFileKind.daily_corporate_events: (
+        "document_number",
+        "company_name",
+        "event_sequence",
+        "event_code",
+        "event_description",
+        "filed_date",
+        "effective_date",
+        "principal_city",
+        "principal_state",
+    ),
+    SourceFileKind.quarterly_corporate_events: (
+        "document_number",
+        "company_name",
+        "event_sequence",
+        "event_code",
+        "event_description",
+        "filed_date",
+        "effective_date",
+        "principal_city",
+        "principal_state",
+    ),
+}
 BASE_OFICIAL_HEADERS = [
     "entity_id",
     "state",
@@ -446,6 +502,70 @@ def get_storage_object(
     return filename, media_type, payload
 
 
+def build_source_file_preview(
+    object_id: uuid.UUID,
+    *,
+    parsed_limit: int = 12,
+    raw_line_limit: int = 8,
+) -> dict[str, object]:
+    session = get_session_factory()()
+    try:
+        source_file = session.get(SourceFile, object_id)
+        if source_file is None or not source_file.bucket_key:
+            raise LookupError("Source file not found or missing bucket key.")
+        metadata = {
+            "id": str(source_file.id),
+            "state": source_file.state,
+            "provider": source_file.provider,
+            "source_kind": source_file.source_kind.value,
+            "filename": source_file.filename,
+            "status": source_file.status.value,
+            "file_date": source_file.file_date.isoformat() if source_file.file_date else None,
+            "total_records": source_file.total_records,
+            "record_length": source_file.record_length,
+            "size_bytes": source_file.size_bytes,
+            "quarterly_shard": _coerce_quarterly_shard(source_file.metadata_json),
+            "is_delta": source_file.is_delta,
+            "bucket_key": source_file.bucket_key,
+            "source_uri": source_file.source_uri,
+            "source_checksum": source_file.source_checksum,
+            "downloaded_at": _isoformat(source_file.downloaded_at),
+            "processed_at": _isoformat(source_file.processed_at),
+        }
+    finally:
+        session.close()
+
+    payload = get_object_store().get_bytes(str(metadata["bucket_key"]))
+    archive_members = _resolve_archive_members(
+        filename=str(metadata["filename"]),
+        payload=payload,
+    )
+    if archive_members:
+        metadata["archive_members"] = ", ".join(archive_members)
+
+    quarterly_shard = metadata.get("quarterly_shard")
+    with TemporaryDirectory() as temp_dir:
+        source_path = Path(temp_dir) / str(metadata["filename"])
+        source_path.write_bytes(payload)
+        parsed_rows = _preview_parsed_rows(
+            source_path,
+            source_kind=SourceFileKind(str(metadata["source_kind"])),
+            quarterly_shard=quarterly_shard if isinstance(quarterly_shard, int) else None,
+            limit=parsed_limit,
+        )
+        raw_rows = _preview_raw_rows(
+            source_path,
+            quarterly_shard=quarterly_shard if isinstance(quarterly_shard, int) else None,
+            limit=raw_line_limit,
+        )
+
+    return {
+        "metadata": metadata,
+        "parsed_rows": parsed_rows,
+        "raw_rows": raw_rows,
+    }
+
+
 def _build_export_rows(
     export_kind: str,
     *,
@@ -465,6 +585,80 @@ def _build_export_rows(
             include_fresh=include_fresh,
         )
     return _build_contactos_evidence_export_rows(state, cohort=cohort, include_fresh=include_fresh)
+
+
+def _resolve_archive_members(*, filename: str, payload: bytes) -> list[str]:
+    if not filename.casefold().endswith(".zip"):
+        return []
+    return list_archive_members_from_bytes(payload)
+
+
+def _coerce_quarterly_shard(metadata_json: dict | None) -> int | None:
+    if not metadata_json:
+        return None
+    raw_value = metadata_json.get("quarterly_shard")
+    if raw_value is None:
+        return None
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _preview_parsed_rows(
+    source_path: Path,
+    *,
+    source_kind: SourceFileKind,
+    quarterly_shard: int | None,
+    limit: int,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    selected_fields = SOURCE_FILE_PREVIEW_FIELDS[source_kind]
+    for record in islice(
+        iter_source_records(source_path, quarterly_shard=quarterly_shard),
+        limit,
+    ):
+        row: dict[str, object] = {
+            "record_no": record.record_no,
+            "byte_offset": record.byte_offset,
+            "parse_status": record.parse_status.value,
+            "error_code": record.error_code,
+        }
+        if source_kind in {
+            SourceFileKind.daily_corporate,
+            SourceFileKind.quarterly_corporate,
+        }:
+            row["officers_count"] = len(record.payload.get("officers") or [])
+        for field_name in selected_fields:
+            row[field_name] = record.payload.get(field_name)
+        rows.append(row)
+    return rows
+
+
+def _preview_raw_rows(
+    source_path: Path,
+    *,
+    quarterly_shard: int | None,
+    limit: int,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for member_name, handle in iter_binary_members(source_path, quarterly_shard=quarterly_shard):
+        member_line_no = 0
+        for raw_line in handle:
+            line = raw_line.rstrip(b"\r\n")
+            if not line:
+                continue
+            member_line_no += 1
+            rows.append(
+                {
+                    "member_name": member_name,
+                    "line_no": member_line_no,
+                    "content": line.decode("ascii", errors="ignore"),
+                }
+            )
+            if len(rows) >= limit:
+                return rows
+    return rows
 
 
 def _build_base_oficial_export_rows(
