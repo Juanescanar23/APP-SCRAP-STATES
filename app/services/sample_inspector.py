@@ -7,15 +7,20 @@ from sqlalchemy import exists, select
 from app.db.models import (
     BusinessEntity,
     ContactEvidence,
+    ContactKind,
     DomainStatus,
     EntityStatus,
     OfficialDomain,
 )
 from app.db.session import get_session_factory
-from app.services.contact_evidence import WEBSITE_CONTACT_KINDS
 from app.services.entity_cohorts import classify_entity_cohort, prioritize_records_by_entity_cohort
 
 SAMPLE_KIND_VALUES = ("pending-domain", "verified-domain", "website-evidence")
+VISIBLE_WEBSITE_EVIDENCE_KINDS = (
+    ContactKind.email,
+    ContactKind.contact_form,
+    ContactKind.contact_page,
+)
 
 
 def inspect_state_samples(
@@ -135,7 +140,7 @@ def _inspect_website_evidence_samples(
             .join(BusinessEntity, BusinessEntity.id == OfficialDomain.entity_id)
             .where(BusinessEntity.state == state.upper())
             .where(BusinessEntity.status == EntityStatus.active)
-            .where(ContactEvidence.kind.in_(WEBSITE_CONTACT_KINDS))
+            .where(ContactEvidence.kind.in_(VISIBLE_WEBSITE_EVIDENCE_KINDS))
             .order_by(ContactEvidence.observed_at.desc())
         ).all()
         prioritized = prioritize_records_by_entity_cohort(
