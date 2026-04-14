@@ -32,7 +32,7 @@ from app.workers.broker import broker  # noqa: F401
 @dramatiq.actor(max_retries=5, queue_name="domain_resolve")
 def resolve_official_domain(state: str, limit: int = 250) -> None:
     metrics = run_domain_resolution(state, limit=limit)
-    if metrics.domain_verified > 0:
+    if metrics.imported_entities > 0:
         from app.workers.tasks_evidence import collect_public_contact_evidence
 
         collect_public_contact_evidence.send(state.upper(), limit)

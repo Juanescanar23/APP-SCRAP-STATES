@@ -48,6 +48,7 @@ class DomainStatus(str, enum.Enum):
 class ContactKind(str, enum.Enum):
     email = "email"
     contact_form = "contact_form"
+    contact_page = "contact_page"
     phone = "phone"
 
 
