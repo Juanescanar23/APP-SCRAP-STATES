@@ -33,6 +33,21 @@ def test_extract_internal_allowlisted_links_limits_to_same_domain() -> None:
     assert all("linkedin.com" not in link for link in links)
 
 
+def test_extract_internal_allowlisted_links_ignores_null_href_values() -> None:
+    html = """
+    <html>
+      <body>
+        <a href>Broken</a>
+        <a href="/contact">Contact</a>
+      </body>
+    </html>
+    """
+
+    links = extract_internal_allowlisted_links("https://example.com", html)
+
+    assert links == ["https://example.com/contact"]
+
+
 def test_extract_evidence_from_html_captures_contact_page_phone_and_form() -> None:
     html = """
     <html>

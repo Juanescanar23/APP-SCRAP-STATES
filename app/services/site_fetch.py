@@ -49,7 +49,8 @@ def extract_internal_allowlisted_links(homepage_url: str, html: str) -> list[str
     links: list[str] = []
 
     for anchor in parser.css("a[href]"):
-        href = anchor.attributes.get("href", "").strip()
+        href_value = anchor.attributes.get("href")
+        href = href_value.strip() if isinstance(href_value, str) else ""
         if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
             continue
 
@@ -98,7 +99,9 @@ async def fetch_allowlisted_site_pages(
         seed_homepage_url = homepage_result.url if homepage_html is not None else homepage_url
         candidate_urls = build_allowlisted_urls(seed_homepage_url)
         if homepage_html is not None:
-            candidate_urls.extend(extract_internal_allowlisted_links(seed_homepage_url, homepage_html))
+            candidate_urls.extend(
+                extract_internal_allowlisted_links(seed_homepage_url, homepage_html)
+            )
 
         limit = max_pages or get_settings().evidence_max_pages
         candidate_urls = dedupe_strings(candidate_urls)[:limit]
@@ -168,4 +171,3 @@ def dedupe_strings(values: list[str]) -> list[str]:
             seen.add(value)
             deduped.append(value)
     return deduped
-
