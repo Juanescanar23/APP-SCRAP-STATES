@@ -145,3 +145,24 @@ def test_prioritize_records_by_entity_cohort_can_skip_fresh_for_automatic_runs()
     )
 
     assert [entity.legal_name for entity in prioritized] == ["Mature LLC"]
+
+
+def test_prioritize_records_by_entity_cohort_handles_duplicate_sort_keys() -> None:
+    first = make_entity(
+        "Same LLC",
+        first_seen_at=datetime(2026, 1, 10, tzinfo=UTC),
+        last_seen_at=datetime(2026, 4, 14, 11, tzinfo=UTC),
+    )
+    second = make_entity(
+        "Same LLC",
+        first_seen_at=datetime(2026, 1, 10, tzinfo=UTC),
+        last_seen_at=datetime(2026, 4, 14, 11, tzinfo=UTC),
+    )
+
+    prioritized = prioritize_records_by_entity_cohort(
+        [(first, "a"), (second, "b")],
+        entity_getter=lambda row: row[0],
+        reference_date=date(2026, 4, 14),
+    )
+
+    assert [row[1] for row in prioritized] == ["a", "b"]

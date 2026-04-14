@@ -81,9 +81,9 @@ def prioritize_records_by_entity_cohort(
 ) -> list[T]:
     selection = normalize_cohort_selection(cohort)
     current_settings = settings or get_settings()
-    ranked: list[tuple[int, float, str, T]] = []
+    ranked: list[tuple[int, float, str, int, T]] = []
 
-    for record in records:
+    for index, record in enumerate(records):
         entity = entity_getter(record)
         entity_cohort = classify_entity_cohort(
             entity,
@@ -104,12 +104,13 @@ def prioritize_records_by_entity_cohort(
                 _cohort_priority(entity_cohort),
                 -_timestamp_key(entity.last_seen_at),
                 entity.legal_name.casefold(),
+                index,
                 record,
             )
         )
 
     ranked.sort()
-    return [record for _, _, _, record in ranked]
+    return [record for _, _, _, _, record in ranked]
 
 
 def iter_cohorts() -> tuple[EntityCohort, ...]:
