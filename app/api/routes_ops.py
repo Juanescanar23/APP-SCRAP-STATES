@@ -866,7 +866,11 @@ def _sum_metric(report, field_name: str) -> int:
 
 
 def _url(path: str, **params: object) -> str:
-    compact = {key: value for key, value in params.items() if value not in {None, "", False}}
+    compact = {
+        key: value
+        for key, value in params.items()
+        if value is not None and value != "" and value is not False
+    }
     if not compact:
         return path
     return f"{path}?{urlencode(compact)}"
