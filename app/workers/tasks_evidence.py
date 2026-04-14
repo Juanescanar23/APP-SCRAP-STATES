@@ -23,6 +23,7 @@ from app.services.contact_evidence import (
     CollectionOutcome,
     collect_public_evidence_for_domain,
 )
+from app.services.entity_cohorts import prioritize_records_by_entity_cohort
 from app.services.metrics import EvidenceCollectionMetrics
 from app.services.review_queue import ReviewQueueRequest, enqueue_review_item
 from app.services.robots_guard import RobotsGuard
@@ -30,19 +31,24 @@ from app.workers.broker import broker  # noqa: F401
 
 
 @dramatiq.actor(max_retries=5, queue_name="website_contact_collect")
-def collect_public_contact_evidence(state: str, limit: int = 100) -> None:
-    run_public_contact_collection(state, limit=limit, verified_only=True)
+def collect_public_contact_evidence(
+    state: str,
+    limit: int = 100,
+    cohort: str = "priority",
+) -> None:
+    run_public_contact_collection(state, limit=limit, verified_only=True, cohort=cohort)
 
 
 def run_public_contact_collection(
     state: str,
     *,
     limit: int = 100,
+    cohort: str = "priority",
     verified_only: bool = True,
     pending_only: bool = True,
     dry_run: bool = False,
 ) -> EvidenceCollectionMetrics:
-    domains = _load_domains(state, limit, verified_only, pending_only)
+    domains = _load_domains(state, limit, cohort, verified_only, pending_only)
     metrics = EvidenceCollectionMetrics()
     if not domains:
         return metrics
@@ -111,6 +117,7 @@ def run_public_contact_collection(
 def _load_domains(
     state: str,
     limit: int,
+    cohort: str,
     verified_only: bool,
     pending_only: bool,
 ) -> list[OfficialDomain]:
@@ -122,18 +129,21 @@ def _load_domains(
             .where(ContactEvidence.kind.in_(WEBSITE_CONTACT_KINDS))
         )
         stmt = (
-            select(OfficialDomain)
+            select(OfficialDomain, BusinessEntity)
             .join(BusinessEntity, BusinessEntity.id == OfficialDomain.entity_id)
             .where(BusinessEntity.state == state.upper())
             .where(BusinessEntity.status == EntityStatus.active)
-            .order_by(BusinessEntity.last_seen_at.desc(), OfficialDomain.confidence.desc())
-            .limit(limit)
         )
         if verified_only:
             stmt = stmt.where(OfficialDomain.status == DomainStatus.verified)
         if pending_only:
             stmt = stmt.where(~existing_website_evidence)
-        return session.scalars(stmt).all()
+        prioritized = prioritize_records_by_entity_cohort(
+            session.execute(stmt).all(),
+            entity_getter=lambda row: row[1],
+            cohort=cohort,
+        )
+        return [domain for domain, _ in prioritized[:limit]]
     finally:
         session.close()
 

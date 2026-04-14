@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     fl_download_timeout_seconds: float = 60.0
     fl_download_retries: int = 3
     fl_pdf_retry_days: int = 5
+    fl_fresh_cohort_days: int = 14
+    fl_tempered_cohort_days: int = 60
     search_provider: str = "none"
     brave_search_api_key: str | None = None
     search_results_per_query: int = 5

@@ -12,6 +12,7 @@ from selectolax.parser import HTMLParser
 from app.core.config import get_settings
 from app.db.models import ArtifactKind, BusinessEntity, ContactKind, SourceFileStatus
 from app.services.contact_evidence import EMAIL_RE, ExtractedEvidence, extract_evidence_from_html
+from app.services.entity_cohorts import latest_registry_activity_date
 from app.services.object_store import ObjectStore
 
 
@@ -219,27 +220,6 @@ def is_pdf_mature(entity: BusinessEntity) -> bool:
     if latest is None:
         return False
     return (date.today() - latest).days > get_settings().fl_pdf_retry_days
-
-
-def latest_registry_activity_date(entity: BusinessEntity) -> date | None:
-    payload = entity.registry_payload or {}
-    candidate_dates = [
-        parse_iso_date(str(payload.get("last_transaction_date") or "")),
-        parse_iso_date(str(payload.get("formed_at") or "")),
-        entity.formed_at,
-    ]
-    return max((value for value in candidate_dates if value is not None), default=None)
-
-
-def parse_iso_date(value: str) -> date | None:
-    value = value.strip()
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(value)
-    except ValueError:
-        return None
-
 
 def dedupe_evidence(evidence: list[ExtractedEvidence]) -> list[ExtractedEvidence]:
     deduped: dict[tuple[Any, str, str], ExtractedEvidence] = {}

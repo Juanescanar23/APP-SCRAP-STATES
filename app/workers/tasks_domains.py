@@ -17,6 +17,7 @@ from app.db.models import (
 )
 from app.db.session import get_session_factory
 from app.services.domain_resolver import DomainResolutionOutcome, resolve_entity_domains
+from app.services.entity_cohorts import prioritize_records_by_entity_cohort
 from app.services.metrics import DomainResolutionMetrics
 from app.services.review_queue import ReviewQueueRequest, enqueue_review_item
 from app.services.search_provider import (
@@ -32,23 +33,28 @@ ACTIONABLE_DOMAIN_REVIEW_REASONS = {"ambiguous_candidates", "candidate_needs_rev
 
 
 @dramatiq.actor(max_retries=5, queue_name="domain_resolve")
-def resolve_official_domain(state: str, limit: int = 250) -> None:
-    metrics = run_domain_resolution(state, limit=limit)
+def resolve_official_domain(
+    state: str,
+    limit: int = 250,
+    cohort: str = "priority",
+) -> None:
+    metrics = run_domain_resolution(state, limit=limit, cohort=cohort)
     if metrics.imported_entities > 0:
         from app.workers.tasks_evidence import collect_public_contact_evidence
 
-        collect_public_contact_evidence.send(state.upper(), limit)
+        collect_public_contact_evidence.send(state.upper(), limit, cohort)
 
 
 @dramatiq.actor(max_retries=5, queue_name="domain_resolve")
-def resolve_domains(state: str) -> None:
-    resolve_official_domain(state)
+def resolve_domains(state: str, cohort: str = "priority") -> None:
+    resolve_official_domain(state, cohort=cohort)
 
 
 def run_domain_resolution(
     state: str,
     *,
     limit: int = 250,
+    cohort: str = "priority",
     dry_run: bool = False,
     search_provider: SearchProvider | None = None,
     site_inspector: SiteInspector | None = None,
@@ -59,7 +65,7 @@ def run_domain_resolution(
     ):
         return DomainResolutionMetrics()
 
-    entities = _load_entities(state, limit)
+    entities = _load_entities(state, limit, cohort)
     metrics = DomainResolutionMetrics(imported_entities=len(entities))
     if not entities:
         return metrics
@@ -143,10 +149,10 @@ def run_domain_resolution(
     return metrics
 
 
-def _load_entities(state: str, limit: int) -> list[BusinessEntity]:
+def _load_entities(state: str, limit: int, cohort: str) -> list[BusinessEntity]:
     session = get_session_factory()()
     try:
-        return session.scalars(
+        entities = session.scalars(
             select(BusinessEntity)
             .where(BusinessEntity.state == state.upper())
             .where(BusinessEntity.status == EntityStatus.active)
@@ -157,9 +163,13 @@ def _load_entities(state: str, limit: int) -> list[BusinessEntity]:
                     .where(OfficialDomain.status == DomainStatus.verified),
                 ),
             )
-            .order_by(BusinessEntity.last_seen_at.desc(), BusinessEntity.legal_name.asc())
-            .limit(limit),
         ).all()
+        prioritized = prioritize_records_by_entity_cohort(
+            entities,
+            entity_getter=lambda entity: entity,
+            cohort=cohort,
+        )
+        return prioritized[:limit]
     finally:
         session.close()
 

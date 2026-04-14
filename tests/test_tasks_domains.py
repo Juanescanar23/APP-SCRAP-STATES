@@ -10,21 +10,28 @@ def test_resolve_official_domain_enqueues_website_evidence_for_processed_batch(
 ) -> None:
     sent: dict[str, object] = {}
 
-    def fake_run_domain_resolution(state: str, *, limit: int = 250) -> DomainResolutionMetrics:
+    def fake_run_domain_resolution(
+        state: str,
+        *,
+        limit: int = 250,
+        cohort: str = "priority",
+    ) -> DomainResolutionMetrics:
         assert state == "fl"
         assert limit == 75
+        assert cohort == "mature"
         return DomainResolutionMetrics(imported_entities=4, domain_verified=0)
 
-    def fake_send(state: str, limit: int) -> None:
+    def fake_send(state: str, limit: int, cohort: str = "priority") -> None:
         sent["state"] = state
         sent["limit"] = limit
+        sent["cohort"] = cohort
 
     monkeypatch.setattr(tasks_domains, "run_domain_resolution", fake_run_domain_resolution)
     monkeypatch.setattr(tasks_evidence.collect_public_contact_evidence, "send", fake_send)
 
-    tasks_domains.resolve_official_domain("fl", limit=75)
+    tasks_domains.resolve_official_domain("fl", limit=75, cohort="mature")
 
-    assert sent == {"state": "FL", "limit": 75}
+    assert sent == {"state": "FL", "limit": 75, "cohort": "mature"}
 
 
 def test_resolve_official_domain_skips_website_evidence_when_nothing_was_processed(
@@ -32,10 +39,15 @@ def test_resolve_official_domain_skips_website_evidence_when_nothing_was_process
 ) -> None:
     called = False
 
-    def fake_run_domain_resolution(state: str, *, limit: int = 250) -> DomainResolutionMetrics:
+    def fake_run_domain_resolution(
+        state: str,
+        *,
+        limit: int = 250,
+        cohort: str = "priority",
+    ) -> DomainResolutionMetrics:
         return DomainResolutionMetrics(imported_entities=0, domain_verified=0)
 
-    def fake_send(state: str, limit: int) -> None:
+    def fake_send(state: str, limit: int, cohort: str = "priority") -> None:
         nonlocal called
         called = True
 
