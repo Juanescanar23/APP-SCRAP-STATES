@@ -27,10 +27,15 @@ from app.services.object_store import get_object_store
 from app.workers.broker import broker  # noqa: F401
 
 FLORIDA_BATCH_SIZE = 1000
+SOURCE_RECORD_REF_NAMESPACE = uuid.UUID("f4df9077-71d0-4f6f-a65d-ec0b1de53fe0")
 
 
 def build_connector(state: str) -> BulkFileConnector:
     return BulkFileConnector(state=state)
+
+
+def _build_source_record_ref_id(source_file_id: uuid.UUID, record_no: int) -> uuid.UUID:
+    return uuid.uuid5(SOURCE_RECORD_REF_NAMESPACE, f"{source_file_id}:{record_no}")
 
 
 @dramatiq.actor(max_retries=5)
@@ -182,7 +187,7 @@ def _import_florida_registry_drop(source_path: Path) -> tuple[uuid.UUID, uuid.UU
         event_values: list[dict[str, object]] = []
 
         for record in iter_source_records(source_path):
-            ref_id = uuid.uuid4()
+            ref_id = _build_source_record_ref_id(source_file.id, record.record_no)
             stats["record_count"] += 1
 
             ref_value = {
@@ -332,7 +337,7 @@ def _import_existing_florida_source_file(source_file_id: uuid.UUID, source_path:
         event_values: list[dict[str, object]] = []
 
         for record in iter_source_records(source_path, quarterly_shard=quarterly_shard):
-            ref_id = uuid.uuid4()
+            ref_id = _build_source_record_ref_id(source_file.id, record.record_no)
             stats["record_count"] += 1
             ref_value = {
                 "id": ref_id,

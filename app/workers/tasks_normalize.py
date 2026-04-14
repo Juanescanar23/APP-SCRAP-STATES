@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from uuid import UUID
 
 import dramatiq
@@ -18,6 +19,9 @@ from app.db.models import (
 from app.db.session import get_session_factory
 from app.services.normalizer import normalize_stage_payload
 from app.workers.broker import broker  # noqa: F401
+
+FLORIDA_ENTITY_UPSERT_BATCH_SIZE = 1000
+FLORIDA_BUSINESS_ENTITY_NAMESPACE = uuid.UUID("c4312e8c-59a4-4791-9839-b23239c82450")
 
 
 @dramatiq.actor(max_retries=5, queue_name="fl_normalize")
@@ -138,32 +142,39 @@ def _run_florida_entity_normalization(source_file_id: UUID) -> int:
             )
             .where(CompanyRegistrySnapshot.source_file_id == source_file_id)
             .where(CompanyRegistrySnapshot.is_current.is_(True))
+            .distinct(CompanyRegistrySnapshot.state, CompanyRegistrySnapshot.external_filing_id)
+            .order_by(
+                CompanyRegistrySnapshot.state,
+                CompanyRegistrySnapshot.external_filing_id,
+                CompanyRegistrySnapshot.observed_at.desc(),
+                CompanyRegistrySnapshot.id.desc(),
+            )
+            .execution_options(yield_per=FLORIDA_ENTITY_UPSERT_BATCH_SIZE)
         )
 
-        insert_stmt = insert(BusinessEntity).from_select(
-            [
-                "state",
-                "external_filing_id",
-                "legal_name",
-                "normalized_name",
-                "status",
-                "formed_at",
-                "registry_payload",
-            ],
-            snapshot_select,
-        )
-        insert_stmt = insert_stmt.on_conflict_do_update(
-            index_elements=["state", "external_filing_id"],
-            set_={
-                "legal_name": insert_stmt.excluded.legal_name,
-                "normalized_name": insert_stmt.excluded.normalized_name,
-                "status": insert_stmt.excluded.status,
-                "formed_at": insert_stmt.excluded.formed_at,
-                "registry_payload": insert_stmt.excluded.registry_payload,
-                "last_seen_at": func.now(),
-            },
-        )
-        session.execute(insert_stmt)
+        imported_entities = 0
+        upsert_values: list[dict[str, object]] = []
+        for row in session.execute(snapshot_select).mappings():
+            upsert_values.append(
+                {
+                    "id": _build_business_entity_id(row["state"], row["external_filing_id"]),
+                    "state": row["state"],
+                    "external_filing_id": row["external_filing_id"],
+                    "legal_name": row["legal_name"],
+                    "normalized_name": row["normalized_name"],
+                    "status": row["status"],
+                    "formed_at": row["formed_at"],
+                    "registry_payload": row["registry_payload"],
+                },
+            )
+            if len(upsert_values) >= FLORIDA_ENTITY_UPSERT_BATCH_SIZE:
+                _flush_florida_entity_upserts(session, upsert_values)
+                imported_entities += len(upsert_values)
+                upsert_values.clear()
+
+        if upsert_values:
+            _flush_florida_entity_upserts(session, upsert_values)
+            imported_entities += len(upsert_values)
 
         entity_id_subquery = (
             select(BusinessEntity.id)
@@ -179,16 +190,33 @@ def _run_florida_entity_normalization(source_file_id: UUID) -> int:
         )
 
         _link_florida_events(session, source_file_id)
-
-        imported_entities = session.scalar(
-            select(func.count(func.distinct(CompanyRegistrySnapshot.external_filing_id))).where(
-                CompanyRegistrySnapshot.source_file_id == source_file_id,
-            ),
-        )
         session.commit()
         return int(imported_entities or 0)
     finally:
         session.close()
+
+
+def _build_business_entity_id(state: str, external_filing_id: str) -> uuid.UUID:
+    return uuid.uuid5(
+        FLORIDA_BUSINESS_ENTITY_NAMESPACE,
+        f"{state.upper()}:{external_filing_id}",
+    )
+
+
+def _flush_florida_entity_upserts(session, upsert_values: list[dict[str, object]]) -> None:
+    stmt = insert(BusinessEntity).values(upsert_values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["state", "external_filing_id"],
+        set_={
+            "legal_name": stmt.excluded.legal_name,
+            "normalized_name": stmt.excluded.normalized_name,
+            "status": stmt.excluded.status,
+            "formed_at": stmt.excluded.formed_at,
+            "registry_payload": stmt.excluded.registry_payload,
+            "last_seen_at": func.now(),
+        },
+    )
+    session.execute(stmt)
 
 
 def _link_florida_events(session, source_file_id: UUID) -> None:
