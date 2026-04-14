@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from app.services.search_provider import parse_yahoo_search_results
+from app.services.search_provider import (
+    build_yahoo_query_variants,
+    parse_yahoo_search_results,
+)
 
 
 def test_parse_yahoo_search_results_extracts_ranked_results() -> None:
@@ -43,3 +46,12 @@ def test_parse_yahoo_search_results_extracts_ranked_results() -> None:
     assert "affordable alternative" in results[0].snippet
     assert results[0].rank == 1
     assert results[1].rank == 2
+
+
+def test_build_yahoo_query_variants_relaxes_problem_queries() -> None:
+    variants = build_yahoo_query_variants('"00 PIZZA LLC" SUNRISE FL official site')
+
+    assert variants[0] == '"00 PIZZA LLC" SUNRISE FL official site'
+    assert "00 PIZZA LLC SUNRISE FL official site" in variants
+    assert "00 PIZZA SUNRISE FL" in variants
+    assert "00 PIZZA FL" in variants
