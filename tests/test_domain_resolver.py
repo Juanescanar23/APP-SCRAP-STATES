@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import pytest
-
 from app.db.models import BusinessEntity, DomainStatus, EntityStatus
-from app.services.domain_resolver import build_domain_queries, resolve_entity_domains, score_search_result
-from app.services.search_provider import FakeSearchProvider, NullSearchProvider, SearchResult
-from app.services.site_identity import FakeSiteInspector, IdentitySignal, SiteIdentityOutcome
+from app.services.domain_resolver import (
+    build_domain_queries,
+    resolve_entity_domains,
+    score_search_result,
+)
+from app.services.search_provider import (
+    FakeSearchProvider,
+    NullSearchProvider,
+    SearchProviderError,
+    SearchResult,
+)
+from app.services.site_identity import (
+    FakeSiteInspector,
+    IdentitySignal,
+    SiteIdentityOutcome,
+)
 
 
 @pytest.fixture
@@ -70,7 +82,9 @@ def test_score_search_result_filters_directory_hosts(entity: BusinessEntity) -> 
 
 
 @pytest.mark.asyncio
-async def test_resolve_entity_domains_marks_single_site_match_as_verified(entity: BusinessEntity) -> None:
+async def test_resolve_entity_domains_marks_single_site_match_as_verified(
+    entity: BusinessEntity,
+) -> None:
     query = '"Sunrise Labs LLC" Miami FL'
     provider = FakeSearchProvider(
         {
@@ -104,13 +118,19 @@ async def test_resolve_entity_domains_marks_single_site_match_as_verified(entity
     assert outcome.review_reason is None
     assert any(candidate.status == DomainStatus.verified for candidate in outcome.candidates)
     assert any(candidate.status == DomainStatus.candidate for candidate in outcome.candidates)
-    verified_candidate = next(candidate for candidate in outcome.candidates if candidate.status == DomainStatus.verified)
+    verified_candidate = next(
+        candidate
+        for candidate in outcome.candidates
+        if candidate.status == DomainStatus.verified
+    )
     assert verified_candidate.domain == "sunriselabs.com"
     assert verified_candidate.evidence["search_evidence"][0]["provider"] == "fake"
 
 
 @pytest.mark.asyncio
-async def test_resolve_entity_domains_ignores_directory_and_social_only(entity: BusinessEntity) -> None:
+async def test_resolve_entity_domains_ignores_directory_and_social_only(
+    entity: BusinessEntity,
+) -> None:
     query = '"Sunrise Labs LLC" Miami FL'
     provider = FakeSearchProvider(
         {
@@ -137,7 +157,9 @@ async def test_resolve_entity_domains_ignores_directory_and_social_only(entity: 
 
 
 @pytest.mark.asyncio
-async def test_resolve_entity_domains_keeps_ambiguous_matches_in_review(entity: BusinessEntity) -> None:
+async def test_resolve_entity_domains_keeps_ambiguous_matches_in_review(
+    entity: BusinessEntity,
+) -> None:
     query = '"Sunrise Labs LLC" Miami FL'
     provider = FakeSearchProvider(
         {
@@ -186,8 +208,27 @@ async def test_resolve_entity_domains_handles_no_results(entity: BusinessEntity)
 
 
 @pytest.mark.asyncio
-async def test_resolve_entity_domains_without_provider_queues_review(entity: BusinessEntity) -> None:
+async def test_resolve_entity_domains_without_provider_queues_review(
+    entity: BusinessEntity,
+) -> None:
     outcome = await resolve_entity_domains(entity, NullSearchProvider(), FakeSiteInspector({}))
+
+    assert outcome.candidates == []
+    assert outcome.review_reason == "search_provider_unavailable"
+
+
+class FailingSearchProvider:
+    provider_name = "yahoo"
+
+    async def search(self, query: str, *, max_results: int) -> list[SearchResult]:
+        raise SearchProviderError(f"query failed: {query}")
+
+
+@pytest.mark.asyncio
+async def test_resolve_entity_domains_handles_provider_runtime_errors(
+    entity: BusinessEntity,
+) -> None:
+    outcome = await resolve_entity_domains(entity, FailingSearchProvider(), FakeSiteInspector({}))
 
     assert outcome.candidates == []
     assert outcome.review_reason == "search_provider_unavailable"

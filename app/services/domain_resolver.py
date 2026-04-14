@@ -8,10 +8,17 @@ from urllib.parse import urlparse
 from app.core.config import get_settings
 from app.db.models import BusinessEntity, DomainStatus
 from app.services.normalizer import normalize_company_name
-from app.services.scoring import overlap_score, score_candidate_domain, string_score
-from app.services.search_provider import SearchProvider, SearchResult
+from app.services.scoring import (
+    overlap_score,
+    score_candidate_domain,
+    string_score,
+)
+from app.services.search_provider import (
+    SearchProvider,
+    SearchProviderError,
+    SearchResult,
+)
 from app.services.site_identity import SiteIdentityOutcome, SiteInspector
-
 
 DOMAIN_HINT_KEYS = ("website", "homepage", "url", "domain", "business_website")
 LOCATION_HINT_KEYS = ("city", "state_name", "mail_city", "mail_state")
@@ -111,12 +118,12 @@ def build_domain_queries(entity: BusinessEntity) -> list[str]:
 
     base_location = f"{city} {state}".strip() if city else state
     queries = [
-        f"\"{entity.legal_name}\" {base_location}".strip(),
-        f"\"{entity.legal_name}\" {base_location} official site".strip(),
-        f"\"{entity.legal_name}\" contact",
+        f'"{entity.legal_name}" {base_location}'.strip(),
+        f'"{entity.legal_name}" {base_location} official site'.strip(),
+        f'"{entity.legal_name}" contact',
     ]
     for alias in aliases:
-        queries.append(f"\"{alias}\" {base_location}".strip())
+        queries.append(f'"{alias}" {base_location}'.strip())
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -129,10 +136,15 @@ def build_domain_queries(entity: BusinessEntity) -> list[str]:
 
 
 def is_blocked_result_host(hostname: str) -> bool:
-    return any(hostname == blocked or hostname.endswith(f".{blocked}") for blocked in BLOCKED_RESULT_HOSTS)
+    return any(
+        hostname == blocked or hostname.endswith(f".{blocked}")
+        for blocked in BLOCKED_RESULT_HOSTS
+    )
 
 
-def score_search_result(entity: BusinessEntity, result: SearchResult, query: str) -> ResolvedDomainCandidate | None:
+def score_search_result(
+    entity: BusinessEntity, result: SearchResult, query: str
+) -> ResolvedDomainCandidate | None:
     try:
         domain, homepage_url = normalize_domain(result.url)
     except ValueError:
@@ -145,13 +157,18 @@ def score_search_result(entity: BusinessEntity, result: SearchResult, query: str
     title_name = normalize_company_name(result.title)
     snippet_name = normalize_company_name(result.snippet)
 
-    domain_score = score_candidate_domain(entity.normalized_name, domain, location_hint=location_hint)
+    domain_score = score_candidate_domain(
+        entity.normalized_name, domain, location_hint=location_hint
+    )
     title_score = max(
         overlap_score(entity.normalized_name, title_name),
         string_score(entity.normalized_name, title_name),
     )
     snippet_score = overlap_score(entity.normalized_name, snippet_name)
-    location_score = overlap_score(location_hint, result.title + " " + result.snippet) if location_hint else 0.0
+    if location_hint:
+        location_score = overlap_score(location_hint, result.title + " " + result.snippet)
+    else:
+        location_score = 0.0
     rank_score = max(0.0, 1.0 - ((result.rank - 1) * 0.12))
 
     confidence = round(
@@ -200,6 +217,7 @@ async def resolve_entity_domains(
     payload = entity.registry_payload or {}
     queries = build_domain_queries(entity)
     candidates_by_domain: dict[str, _CandidateRecord] = {}
+    provider_runtime_error = False
 
     for hint in extract_domain_hints(payload):
         domain, homepage_url = normalize_domain(hint)
@@ -227,10 +245,16 @@ async def resolve_entity_domains(
 
     if search_provider.provider_name != "none":
         for query in queries:
-            for result in await search_provider.search(
-                query,
-                max_results=get_settings().search_results_per_query,
-            ):
+            try:
+                search_results = await search_provider.search(
+                    query,
+                    max_results=get_settings().search_results_per_query,
+                )
+            except SearchProviderError:
+                provider_runtime_error = True
+                continue
+
+            for result in search_results:
                 candidate = score_search_result(entity, result, query)
                 if candidate is None:
                     continue
@@ -242,11 +266,13 @@ async def resolve_entity_domains(
                         search_confidence=candidate.search_confidence,
                     ),
                 )
-                record.search_confidence = max(record.search_confidence, candidate.search_confidence)
+                record.search_confidence = max(
+                    record.search_confidence, candidate.search_confidence
+                )
                 record.search_evidence.extend(candidate.evidence.get("search_evidence", []))
 
     if not candidates_by_domain:
-        if search_provider.provider_name == "none":
+        if search_provider.provider_name == "none" or provider_runtime_error:
             return DomainResolutionOutcome([], "search_provider_unavailable", queries)
         return DomainResolutionOutcome([], "domain_unresolved", queries)
 
@@ -255,7 +281,9 @@ async def resolve_entity_domains(
 
     verified_indices: list[int] = []
     candidates: list[ResolvedDomainCandidate] = []
-    for index, (record, identity_outcome) in enumerate(zip(records, identity_outcomes, strict=True)):
+    for index, (record, identity_outcome) in enumerate(
+        zip(records, identity_outcomes, strict=True)
+    ):
         record.site_identity = _serialize_site_identity(identity_outcome)
         final_confidence = round(
             min((record.search_confidence * 0.35) + (identity_outcome.confidence * 0.65), 1.0),
@@ -283,11 +311,20 @@ async def resolve_entity_domains(
 
     candidates.sort(key=lambda candidate: (-candidate.confidence, candidate.domain))
 
-    review_reason = _determine_review_reason(candidates, verified_indices, search_provider.provider_name)
+    review_reason = _determine_review_reason(
+        candidates,
+        verified_indices,
+        search_provider.provider_name,
+        provider_runtime_error,
+    )
     if review_reason is None:
         _promote_single_verified_candidate(candidates)
 
-    return DomainResolutionOutcome(candidates=candidates, review_reason=review_reason, queries=queries)
+    return DomainResolutionOutcome(
+        candidates=candidates,
+        review_reason=review_reason,
+        queries=queries,
+    )
 
 
 async def _inspect_candidates(
@@ -322,6 +359,7 @@ def _determine_review_reason(
     candidates: list[ResolvedDomainCandidate],
     verified_indices: list[int],
     provider_name: str,
+    provider_runtime_error: bool = False,
 ) -> str | None:
     if len(verified_indices) == 1:
         return None
@@ -329,7 +367,7 @@ def _determine_review_reason(
         return "ambiguous_candidates"
     if candidates:
         return "candidate_needs_review"
-    if provider_name == "none":
+    if provider_name == "none" or provider_runtime_error:
         return "search_provider_unavailable"
     return "domain_unresolved"
 
