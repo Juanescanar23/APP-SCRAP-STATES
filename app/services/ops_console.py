@@ -653,7 +653,7 @@ def _preview_raw_rows(
                 {
                     "member_name": member_name,
                     "line_no": member_line_no,
-                    "content": line.decode("ascii", errors="ignore"),
+                    "content": line.decode("ascii", errors="ignore").replace("\x00", ""),
                 }
             )
             if len(rows) >= limit:
