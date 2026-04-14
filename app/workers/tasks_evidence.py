@@ -167,6 +167,7 @@ async def _collect_for_domains(domains: list[OfficialDomain]) -> dict[str, Colle
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=settings.http_timeout_seconds,
+        headers={"User-Agent": settings.user_agent},
     ) as client:
         results = await asyncio.gather(
             *[collect_public_evidence_for_domain(domain, guard, client) for domain in domains],

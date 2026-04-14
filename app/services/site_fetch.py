@@ -83,6 +83,7 @@ async def fetch_allowlisted_site_pages(
     http_client = client or httpx.AsyncClient(
         follow_redirects=True,
         timeout=get_settings().http_timeout_seconds,
+        headers={"User-Agent": get_settings().user_agent},
     )
 
     visited_urls: list[str] = []
