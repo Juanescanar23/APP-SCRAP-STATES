@@ -53,6 +53,40 @@ async def test_quarterly_download_stores_zip_and_lists_members(tmp_path: Path) -
     assert store.exists(build_bucket_key(request, checksum=result.checksum))
 
 
+@pytest.mark.asyncio
+async def test_sftp_download_uses_fetcher_when_credentials_exist(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    zip_path = tmp_path / "cordata.zip"
+    with ZipFile(zip_path, "w") as archive:
+        archive.writestr("cordata_0.txt", "record-0\n")
+    payload = zip_path.read_bytes()
+
+    monkeypatch.setenv("BIZINTEL_FL_SFTP_USERNAME", "Public")
+    monkeypatch.setenv("BIZINTEL_FL_SFTP_PASSWORD", "PubAccess1845!")
+    monkeypatch.setenv("BIZINTEL_FL_SFTP_PORT", "22")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    store = LocalObjectStore(tmp_path / "objects")
+    request = FloridaDownloadRequest(
+        source_kind=SourceFileKind.quarterly_corporate,
+        quarterly_shard=0,
+    )
+
+    def fake_sftp_fetcher(_: FloridaDownloadRequest) -> bytes:
+        return payload
+
+    result = await download_florida_source_file(request, store, sftp_fetcher=fake_sftp_fetcher)
+
+    assert result.status == "completed"
+    assert result.archive_members == ["cordata_0.txt"]
+    assert result.storage_object is not None
+    assert store.exists(build_bucket_key(request, checksum=result.checksum))
+    get_settings.cache_clear()
+
+
 def test_build_bucket_key_uses_checksum_versioning_for_quarterly() -> None:
     request = FloridaDownloadRequest(
         source_kind=SourceFileKind.quarterly_corporate,

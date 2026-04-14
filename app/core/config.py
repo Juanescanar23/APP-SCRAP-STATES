@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -51,6 +52,9 @@ class Settings(BaseSettings):
     user_agent: str = "bizintel-bot/0.1"
     http_timeout_seconds: float = 10.0
     fl_base_url: str = "https://sftp.floridados.gov"
+    fl_sftp_username: str | None = None
+    fl_sftp_password: str | None = None
+    fl_sftp_port: int = 22
     fl_sunbiz_search_base_url: str = "https://search.sunbiz.org"
     fl_download_timeout_seconds: float = 60.0
     fl_download_retries: int = 3
@@ -85,6 +89,11 @@ class Settings(BaseSettings):
     evidence_max_pages: int = 8
     page_size_default: int = 50
     page_size_max: int = 200
+
+    @property
+    def fl_sftp_host(self) -> str:
+        parsed = urlparse(self.fl_base_url)
+        return parsed.hostname or self.fl_base_url
 
 
 @lru_cache(maxsize=1)

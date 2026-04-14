@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import mimetypes
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -96,8 +98,28 @@ async def download_florida_source_file(
     request: FloridaDownloadRequest,
     object_store: ObjectStore,
     client: httpx.AsyncClient | None = None,
+    sftp_fetcher: Callable[[FloridaDownloadRequest], bytes] | None = None,
 ) -> FloridaDownloadResult:
     settings = get_settings()
+    if settings.fl_sftp_username and settings.fl_sftp_password:
+        try:
+            payload = await _download_via_sftp(
+                request,
+                fetcher=sftp_fetcher or _download_via_sftp_sync,
+            )
+        except FileNotFoundError:
+            if request.is_daily:
+                return FloridaDownloadResult(
+                    request=request,
+                    storage_object=None,
+                    checksum=None,
+                    downloaded_at=datetime.now(UTC),
+                    archive_members=[],
+                    status="noop",
+                )
+            raise
+        return _build_download_result(request, payload, object_store)
+
     owned_client = client is None
     if client is None:
         client = httpx.AsyncClient(
@@ -118,33 +140,84 @@ async def download_florida_source_file(
             )
         response.raise_for_status()
 
-        payload = response.content
-        checksum = hashlib.sha256(payload).hexdigest()
-        stored_object = object_store.put_bytes(
-            build_bucket_key(request, checksum=checksum),
-            payload,
+        return _build_download_result(
+            request,
+            response.content,
+            object_store,
             content_type=response.headers.get("content-type"),
-            metadata={
-                "remote_path": request.remote_path,
-                "period_key": request.period_key,
-            },
-        )
-        archive_members = (
-            list_archive_members_from_bytes(payload)
-            if request.remote_path.lower().endswith(".zip")
-            else []
-        )
-        return FloridaDownloadResult(
-            request=request,
-            storage_object=stored_object,
-            checksum=checksum,
-            downloaded_at=datetime.now(UTC),
-            archive_members=archive_members,
-            status="completed",
         )
     finally:
         if owned_client:
             await client.aclose()
+
+
+async def _download_via_sftp(
+    request: FloridaDownloadRequest,
+    *,
+    fetcher: Callable[[FloridaDownloadRequest], bytes],
+) -> bytes:
+    return await __import__("asyncio").to_thread(fetcher, request)
+
+
+def _download_via_sftp_sync(request: FloridaDownloadRequest) -> bytes:
+    settings = get_settings()
+    if not settings.fl_sftp_username or not settings.fl_sftp_password:
+        raise RuntimeError("Florida SFTP credentials are required for SFTP downloads.")
+
+    try:
+        import paramiko  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("paramiko is required for Florida SFTP downloads.") from exc
+
+    transport = paramiko.Transport((settings.fl_sftp_host, settings.fl_sftp_port))
+    try:
+        transport.connect(
+            username=settings.fl_sftp_username,
+            password=settings.fl_sftp_password,
+        )
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        try:
+            with sftp.open(request.remote_path, "rb") as remote_file:
+                return remote_file.read()
+        except OSError as exc:
+            if getattr(exc, "errno", None) == 2 or "No such file" in str(exc):
+                raise FileNotFoundError(request.remote_path) from exc
+            raise
+        finally:
+            sftp.close()
+    finally:
+        transport.close()
+
+
+def _build_download_result(
+    request: FloridaDownloadRequest,
+    payload: bytes,
+    object_store: ObjectStore,
+    *,
+    content_type: str | None = None,
+) -> FloridaDownloadResult:
+    checksum = hashlib.sha256(payload).hexdigest()
+    inferred_content_type = content_type or mimetypes.guess_type(request.filename)[0]
+    stored_object = object_store.put_bytes(
+        build_bucket_key(request, checksum=checksum),
+        payload,
+        content_type=inferred_content_type,
+        metadata={
+            "remote_path": request.remote_path,
+            "period_key": request.period_key,
+        },
+    )
+    archive_members = []
+    if request.remote_path.lower().endswith(".zip"):
+        archive_members = list_archive_members_from_bytes(payload)
+    return FloridaDownloadResult(
+        request=request,
+        storage_object=stored_object,
+        checksum=checksum,
+        downloaded_at=datetime.now(UTC),
+        archive_members=archive_members,
+        status="completed",
+    )
 
 
 def build_bucket_key(
