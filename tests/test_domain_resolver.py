@@ -152,7 +152,7 @@ async def test_resolve_entity_domains_ignores_directory_and_social_only(
 
     outcome = await resolve_entity_domains(entity, provider, FakeSiteInspector({}))
 
-    assert outcome.candidates == []
+    assert any(candidate.domain == "sunriselabs.com" for candidate in outcome.candidates)
     assert outcome.review_reason == "domain_unresolved"
 
 
@@ -203,7 +203,7 @@ async def test_resolve_entity_domains_keeps_ambiguous_matches_in_review(
 async def test_resolve_entity_domains_handles_no_results(entity: BusinessEntity) -> None:
     outcome = await resolve_entity_domains(entity, FakeSearchProvider({}), FakeSiteInspector({}))
 
-    assert outcome.candidates == []
+    assert any(candidate.domain == "sunriselabs.com" for candidate in outcome.candidates)
     assert outcome.review_reason == "domain_unresolved"
 
 
@@ -213,8 +213,8 @@ async def test_resolve_entity_domains_without_provider_queues_review(
 ) -> None:
     outcome = await resolve_entity_domains(entity, NullSearchProvider(), FakeSiteInspector({}))
 
-    assert outcome.candidates == []
-    assert outcome.review_reason == "search_provider_unavailable"
+    assert any(candidate.domain == "sunriselabs.com" for candidate in outcome.candidates)
+    assert outcome.review_reason == "domain_unresolved"
 
 
 class FailingSearchProvider:
@@ -230,5 +230,30 @@ async def test_resolve_entity_domains_handles_provider_runtime_errors(
 ) -> None:
     outcome = await resolve_entity_domains(entity, FailingSearchProvider(), FakeSiteInspector({}))
 
-    assert outcome.candidates == []
-    assert outcome.review_reason == "search_provider_unavailable"
+    assert any(candidate.domain == "sunriselabs.com" for candidate in outcome.candidates)
+    assert outcome.review_reason == "domain_unresolved"
+
+
+@pytest.mark.asyncio
+async def test_resolve_entity_domains_heuristic_guess_can_verify_without_provider(
+    entity: BusinessEntity,
+) -> None:
+    inspector = FakeSiteInspector(
+        {
+            "https://sunriselabs.com": make_identity_outcome(
+                homepage_url="https://sunriselabs.com",
+                verified=True,
+                confidence=0.83,
+            ),
+        },
+    )
+
+    outcome = await resolve_entity_domains(entity, NullSearchProvider(), inspector)
+
+    assert outcome.review_reason is None
+    verified_candidate = next(
+        candidate
+        for candidate in outcome.candidates
+        if candidate.status == DomainStatus.verified
+    )
+    assert verified_candidate.domain == "sunriselabs.com"

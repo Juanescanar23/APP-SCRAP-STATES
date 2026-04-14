@@ -23,6 +23,15 @@ from app.services.site_identity import SiteIdentityOutcome, SiteInspector
 DOMAIN_HINT_KEYS = ("website", "homepage", "url", "domain", "business_website")
 LOCATION_HINT_KEYS = ("city", "state_name", "mail_city", "mail_state")
 ALIAS_KEYS = ("dba_name", "trade_name", "alternate_name")
+TRAILING_GENERIC_DOMAIN_TOKENS = {
+    "group",
+    "holding",
+    "holdings",
+    "service",
+    "services",
+    "usa",
+    "us",
+}
 BLOCKED_RESULT_HOSTS = {
     "facebook.com",
     "instagram.com",
@@ -65,6 +74,7 @@ class _CandidateRecord:
     search_confidence: float
     search_evidence: list[dict[str, Any]] = field(default_factory=list)
     registry_hints: list[dict[str, Any]] = field(default_factory=list)
+    heuristic_guesses: list[dict[str, Any]] = field(default_factory=list)
     site_identity: dict[str, Any] | None = None
 
 
@@ -133,6 +143,42 @@ def build_domain_queries(entity: BusinessEntity) -> list[str]:
             deduped.append(normalized)
             seen.add(normalized)
     return deduped
+
+
+def build_heuristic_domain_roots(name: str) -> list[tuple[str, str]]:
+    tokens = [token for token in name.split() if token]
+    if not tokens:
+        return []
+
+    roots: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(root: str, strategy: str) -> None:
+        normalized = root.strip("-")
+        if (
+            not normalized
+            or normalized in seen
+            or len(normalized) < 3
+            or len(normalized) > 63
+        ):
+            return
+        seen.add(normalized)
+        roots.append((normalized, strategy))
+
+    add("".join(tokens), "compact")
+    if len(tokens) > 1:
+        add("-".join(tokens), "hyphenated")
+
+    trimmed_tokens = list(tokens)
+    while len(trimmed_tokens) > 1 and trimmed_tokens[-1] in TRAILING_GENERIC_DOMAIN_TOKENS:
+        trimmed_tokens.pop()
+
+    if trimmed_tokens != tokens:
+        add("".join(trimmed_tokens), "compact_trimmed")
+        if len(trimmed_tokens) > 1:
+            add("-".join(trimmed_tokens), "hyphenated_trimmed")
+
+    return roots
 
 
 def is_blocked_result_host(hostname: str) -> bool:
@@ -272,11 +318,17 @@ async def resolve_entity_domains(
                 record.search_evidence.extend(candidate.evidence.get("search_evidence", []))
 
     if not candidates_by_domain:
+        _add_heuristic_candidates(entity, candidates_by_domain)
+
+    if not candidates_by_domain:
         if search_provider.provider_name == "none" or provider_runtime_error:
             return DomainResolutionOutcome([], "search_provider_unavailable", queries)
         return DomainResolutionOutcome([], "domain_unresolved", queries)
 
     records = list(candidates_by_domain.values())
+    heuristic_only = all(
+        not record.search_evidence and not record.registry_hints for record in records
+    )
     identity_outcomes = await _inspect_candidates(entity, records, site_inspector)
 
     verified_indices: list[int] = []
@@ -302,6 +354,7 @@ async def resolve_entity_domains(
                     key=lambda item: (item.get("query", ""), item.get("rank", 999)),
                 ),
                 "registry_hints": record.registry_hints,
+                "heuristic_guesses": record.heuristic_guesses,
                 "site_identity": record.site_identity,
             },
         )
@@ -316,6 +369,7 @@ async def resolve_entity_domains(
         verified_indices,
         search_provider.provider_name,
         provider_runtime_error,
+        heuristic_only,
     )
     if review_reason is None:
         _promote_single_verified_candidate(candidates)
@@ -335,6 +389,57 @@ async def _inspect_candidates(
     return await asyncio.gather(
         *[site_inspector.inspect(entity, record.homepage_url) for record in records],
     )
+
+
+def _add_heuristic_candidates(
+    entity: BusinessEntity,
+    candidates_by_domain: dict[str, _CandidateRecord],
+) -> None:
+    payload = entity.registry_payload or {}
+    location_hint = extract_location_hint(payload, entity.state)
+    alias_names = [
+        normalize_company_name(alias)
+        for alias in extract_aliases(payload)
+        if normalize_company_name(alias)
+    ]
+    source_names = [entity.normalized_name, *alias_names]
+
+    for source_name in source_names:
+        for root, strategy in build_heuristic_domain_roots(source_name):
+            domain = f"{root}.com"
+            confidence = max(
+                score_candidate_domain(
+                    entity.normalized_name,
+                    domain,
+                    location_hint=location_hint,
+                ),
+                score_candidate_domain(
+                    source_name,
+                    domain,
+                    location_hint=location_hint,
+                ),
+            )
+            if confidence < 0.72:
+                continue
+
+            homepage_url = f"https://{domain}"
+            record = candidates_by_domain.setdefault(
+                domain,
+                _CandidateRecord(
+                    domain=domain,
+                    homepage_url=homepage_url,
+                    search_confidence=confidence,
+                ),
+            )
+            record.search_confidence = max(record.search_confidence, confidence)
+            record.heuristic_guesses.append(
+                {
+                    "source_name": source_name,
+                    "strategy": strategy,
+                    "normalized_domain": domain,
+                    "score": confidence,
+                },
+            )
 
 
 def _serialize_site_identity(outcome: SiteIdentityOutcome) -> dict[str, Any]:
@@ -360,15 +465,16 @@ def _determine_review_reason(
     verified_indices: list[int],
     provider_name: str,
     provider_runtime_error: bool = False,
+    heuristic_only: bool = False,
 ) -> str | None:
     if len(verified_indices) == 1:
         return None
     if len(verified_indices) > 1:
         return "ambiguous_candidates"
-    if candidates:
+    if candidates and not heuristic_only:
         return "candidate_needs_review"
     if provider_name == "none" or provider_runtime_error:
-        return "search_provider_unavailable"
+        return "domain_unresolved" if heuristic_only else "search_provider_unavailable"
     return "domain_unresolved"
 
 

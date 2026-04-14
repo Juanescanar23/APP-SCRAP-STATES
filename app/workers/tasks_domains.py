@@ -28,6 +28,8 @@ from app.services.search_provider import (
 from app.services.site_identity import HttpSiteInspector, SiteInspector
 from app.workers.broker import broker  # noqa: F401
 
+ACTIONABLE_DOMAIN_REVIEW_REASONS = {"ambiguous_candidates", "candidate_needs_review"}
+
 
 @dramatiq.actor(max_retries=5, queue_name="domain_resolve")
 def resolve_official_domain(state: str, limit: int = 250) -> None:
@@ -77,7 +79,7 @@ def run_domain_resolution(
         for entity in entities:
             outcome = resolution_map[str(entity.id)]
             _apply_domain_metrics(metrics, outcome)
-            if outcome.review_reason:
+            if _should_enqueue_review(outcome.review_reason):
                 metrics.review_items_queued += 1
         return metrics
 
@@ -100,7 +102,7 @@ def run_domain_resolution(
                     },
                 )
 
-            if outcome.review_reason:
+            if _should_enqueue_review(outcome.review_reason):
                 metrics.review_items_queued += 1
                 top_candidate = outcome.candidates[0] if outcome.candidates else None
                 enqueue_review_item(
@@ -173,6 +175,10 @@ def _apply_domain_metrics(
     metrics.domain_verified += verified_count
     if verified_count == 0:
         metrics.domain_unresolved += 1
+
+
+def _should_enqueue_review(review_reason: str | None) -> bool:
+    return review_reason in ACTIONABLE_DOMAIN_REVIEW_REASONS
 
 
 async def _resolve_entities(
