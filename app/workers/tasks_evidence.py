@@ -35,8 +35,15 @@ def collect_public_contact_evidence(
     state: str,
     limit: int = 100,
     cohort: str = "priority",
+    include_fresh: bool = True,
 ) -> None:
-    run_public_contact_collection(state, limit=limit, verified_only=True, cohort=cohort)
+    run_public_contact_collection(
+        state,
+        limit=limit,
+        verified_only=True,
+        cohort=cohort,
+        include_fresh=include_fresh,
+    )
 
 
 def run_public_contact_collection(
@@ -44,11 +51,12 @@ def run_public_contact_collection(
     *,
     limit: int = 100,
     cohort: str = "priority",
+    include_fresh: bool = True,
     verified_only: bool = True,
     pending_only: bool = True,
     dry_run: bool = False,
 ) -> EvidenceCollectionMetrics:
-    domains = _load_domains(state, limit, cohort, verified_only, pending_only)
+    domains = _load_domains(state, limit, cohort, include_fresh, verified_only, pending_only)
     metrics = EvidenceCollectionMetrics()
     if not domains:
         return metrics
@@ -118,6 +126,7 @@ def _load_domains(
     state: str,
     limit: int,
     cohort: str,
+    include_fresh: bool,
     verified_only: bool,
     pending_only: bool,
 ) -> list[OfficialDomain]:
@@ -142,6 +151,7 @@ def _load_domains(
             session.execute(stmt).all(),
             entity_getter=lambda row: row[1],
             cohort=cohort,
+            include_fresh=include_fresh,
         )
         return [domain for domain, _ in prioritized[:limit]]
     finally:

@@ -15,23 +15,36 @@ def test_resolve_official_domain_enqueues_website_evidence_for_processed_batch(
         *,
         limit: int = 250,
         cohort: str = "priority",
+        include_fresh: bool = True,
     ) -> DomainResolutionMetrics:
         assert state == "fl"
         assert limit == 75
         assert cohort == "mature"
+        assert include_fresh is False
         return DomainResolutionMetrics(imported_entities=4, domain_verified=0)
 
-    def fake_send(state: str, limit: int, cohort: str = "priority") -> None:
+    def fake_send(
+        state: str,
+        limit: int,
+        cohort: str = "priority",
+        include_fresh: bool = True,
+    ) -> None:
         sent["state"] = state
         sent["limit"] = limit
         sent["cohort"] = cohort
+        sent["include_fresh"] = include_fresh
 
     monkeypatch.setattr(tasks_domains, "run_domain_resolution", fake_run_domain_resolution)
     monkeypatch.setattr(tasks_evidence.collect_public_contact_evidence, "send", fake_send)
 
-    tasks_domains.resolve_official_domain("fl", limit=75, cohort="mature")
+    tasks_domains.resolve_official_domain("fl", limit=75, cohort="mature", include_fresh=False)
 
-    assert sent == {"state": "FL", "limit": 75, "cohort": "mature"}
+    assert sent == {
+        "state": "FL",
+        "limit": 75,
+        "cohort": "mature",
+        "include_fresh": False,
+    }
 
 
 def test_resolve_official_domain_skips_website_evidence_when_nothing_was_processed(
@@ -44,10 +57,16 @@ def test_resolve_official_domain_skips_website_evidence_when_nothing_was_process
         *,
         limit: int = 250,
         cohort: str = "priority",
+        include_fresh: bool = True,
     ) -> DomainResolutionMetrics:
         return DomainResolutionMetrics(imported_entities=0, domain_verified=0)
 
-    def fake_send(state: str, limit: int, cohort: str = "priority") -> None:
+    def fake_send(
+        state: str,
+        limit: int,
+        cohort: str = "priority",
+        include_fresh: bool = True,
+    ) -> None:
         nonlocal called
         called = True
 

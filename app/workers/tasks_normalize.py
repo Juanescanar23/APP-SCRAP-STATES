@@ -55,7 +55,7 @@ def normalize_entities(
     if imported_entities > 0:
         from app.workers.tasks_domains import resolve_domains
 
-        resolve_domains.send(state.upper())
+        resolve_domains.send(state.upper(), "priority", False)
 
 
 def run_entity_normalization(

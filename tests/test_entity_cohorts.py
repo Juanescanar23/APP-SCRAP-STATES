@@ -125,3 +125,23 @@ def test_prioritize_records_by_entity_cohort_sorts_mature_first_and_filters_expl
         "Fresh LLC",
     ]
     assert [entity.legal_name for entity in tempered_only] == ["Tempered LLC"]
+
+
+def test_prioritize_records_by_entity_cohort_can_skip_fresh_for_automatic_runs() -> None:
+    fresh = make_entity(
+        "Fresh LLC",
+        first_seen_at=datetime(2026, 4, 8, tzinfo=UTC),
+    )
+    mature = make_entity(
+        "Mature LLC",
+        first_seen_at=datetime(2026, 1, 10, tzinfo=UTC),
+    )
+
+    prioritized = prioritize_records_by_entity_cohort(
+        [fresh, mature],
+        entity_getter=lambda entity: entity,
+        include_fresh=False,
+        reference_date=date(2026, 4, 14),
+    )
+
+    assert [entity.legal_name for entity in prioritized] == ["Mature LLC"]

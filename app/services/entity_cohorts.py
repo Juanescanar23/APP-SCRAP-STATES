@@ -75,6 +75,7 @@ def prioritize_records_by_entity_cohort(
     *,
     entity_getter: Callable[[T], BusinessEntity],
     cohort: str = DEFAULT_COHORT_SELECTION,
+    include_fresh: bool = True,
     reference_date: date | None = None,
     settings: Settings | None = None,
 ) -> list[T]:
@@ -89,6 +90,12 @@ def prioritize_records_by_entity_cohort(
             reference_date=reference_date,
             settings=current_settings,
         )
+        if (
+            selection == DEFAULT_COHORT_SELECTION
+            and not include_fresh
+            and entity_cohort == EntityCohort.fresh
+        ):
+            continue
         if selection != DEFAULT_COHORT_SELECTION and entity_cohort.value != selection:
             continue
 

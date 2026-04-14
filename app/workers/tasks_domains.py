@@ -37,17 +37,27 @@ def resolve_official_domain(
     state: str,
     limit: int = 250,
     cohort: str = "priority",
+    include_fresh: bool = True,
 ) -> None:
-    metrics = run_domain_resolution(state, limit=limit, cohort=cohort)
+    metrics = run_domain_resolution(
+        state,
+        limit=limit,
+        cohort=cohort,
+        include_fresh=include_fresh,
+    )
     if metrics.imported_entities > 0:
         from app.workers.tasks_evidence import collect_public_contact_evidence
 
-        collect_public_contact_evidence.send(state.upper(), limit, cohort)
+        collect_public_contact_evidence.send(state.upper(), limit, cohort, include_fresh)
 
 
 @dramatiq.actor(max_retries=5, queue_name="domain_resolve")
-def resolve_domains(state: str, cohort: str = "priority") -> None:
-    resolve_official_domain(state, cohort=cohort)
+def resolve_domains(
+    state: str,
+    cohort: str = "priority",
+    include_fresh: bool = True,
+) -> None:
+    resolve_official_domain(state, cohort=cohort, include_fresh=include_fresh)
 
 
 def run_domain_resolution(
@@ -55,6 +65,7 @@ def run_domain_resolution(
     *,
     limit: int = 250,
     cohort: str = "priority",
+    include_fresh: bool = True,
     dry_run: bool = False,
     search_provider: SearchProvider | None = None,
     site_inspector: SiteInspector | None = None,
@@ -65,7 +76,7 @@ def run_domain_resolution(
     ):
         return DomainResolutionMetrics()
 
-    entities = _load_entities(state, limit, cohort)
+    entities = _load_entities(state, limit, cohort, include_fresh)
     metrics = DomainResolutionMetrics(imported_entities=len(entities))
     if not entities:
         return metrics
@@ -149,7 +160,12 @@ def run_domain_resolution(
     return metrics
 
 
-def _load_entities(state: str, limit: int, cohort: str) -> list[BusinessEntity]:
+def _load_entities(
+    state: str,
+    limit: int,
+    cohort: str,
+    include_fresh: bool,
+) -> list[BusinessEntity]:
     session = get_session_factory()()
     try:
         entities = session.scalars(
@@ -168,6 +184,7 @@ def _load_entities(state: str, limit: int, cohort: str) -> list[BusinessEntity]:
             entities,
             entity_getter=lambda entity: entity,
             cohort=cohort,
+            include_fresh=include_fresh,
         )
         return prioritized[:limit]
     finally:
