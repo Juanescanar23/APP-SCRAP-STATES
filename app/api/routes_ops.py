@@ -545,25 +545,23 @@ def _redirect_dashboard(state: str, notice: str) -> RedirectResponse:
 def _render_page(title: str, body: str) -> str:
     css = """
     :root {
-      --bg: #f4efe7;
-      --card: #fffaf3;
-      --ink: #1e1b16;
-      --muted: #6f6558;
-      --line: #d8ccbc;
-      --accent: #204c3c;
-      --accent-soft: #e2f1e9;
-      --warn: #8c3d12;
-      --warn-soft: #fff1e9;
+      --bg: #f3f3f3;
+      --card: #ffffff;
+      --ink: #111111;
+      --muted: #6a6a6a;
+      --line: #d8d8d8;
+      --accent: #111111;
+      --accent-soft: #f3f3f3;
+      --warn: #111111;
+      --warn-soft: #f3f3f3;
       --mono: "SFMono-Regular", "Menlo", monospace;
-      --sans: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       padding: 32px;
-      background:
-        radial-gradient(circle at top left, rgba(32, 76, 60, 0.08), transparent 32%),
-        linear-gradient(180deg, #f7f1e8 0%, #f1e8dc 100%);
+      background: var(--bg);
       color: var(--ink);
       font-family: var(--sans);
     }
@@ -576,9 +574,9 @@ def _render_page(title: str, body: str) -> str:
     .panel {
       background: var(--card);
       border: 1px solid var(--line);
-      border-radius: 24px;
+      border-radius: 18px;
       padding: 24px;
-      box-shadow: 0 16px 48px rgba(34, 25, 12, 0.07);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
     }
     h1, h2, h3 { margin: 0 0 8px; }
     p, li, td, th, a, span, button { font-size: 15px; }
@@ -600,14 +598,20 @@ def _render_page(title: str, body: str) -> str:
       background: #fff;
       cursor: pointer;
       font-family: inherit;
+      transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
     }
     button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
     button.secondary { background: #fff; color: var(--ink); }
     .nav a:hover, .links a:hover, button:hover {
       border-color: var(--accent);
-      color: var(--accent);
+      background: #f7f7f7;
+      color: var(--ink);
     }
-    button.primary:hover { color: #fff; opacity: 0.92; }
+    button.primary:hover {
+      color: #fff;
+      background: #000;
+      border-color: #000;
+    }
     form { margin: 0; }
     .cards {
       display: grid;
@@ -617,7 +621,7 @@ def _render_page(title: str, body: str) -> str:
     .card {
       background: #fff;
       border: 1px solid var(--line);
-      border-radius: 20px;
+      border-radius: 16px;
       padding: 18px;
     }
     .card .label {
@@ -631,18 +635,18 @@ def _render_page(title: str, body: str) -> str:
       width: 100%;
       border-collapse: collapse;
       overflow: hidden;
-      border-radius: 16px;
+      border-radius: 14px;
       border: 1px solid var(--line);
       background: #fff;
     }
     th, td {
       padding: 12px 14px;
-      border-bottom: 1px solid #efe4d6;
+      border-bottom: 1px solid #ededed;
       text-align: left;
       vertical-align: top;
     }
     th {
-      background: #f7efe4;
+      background: #f7f7f7;
       font-size: 12px;
       text-transform: uppercase;
       letter-spacing: 0.08em;
@@ -657,14 +661,14 @@ def _render_page(title: str, body: str) -> str:
     .empty {
       padding: 18px;
       border: 1px dashed var(--line);
-      border-radius: 16px;
+      border-radius: 14px;
       color: var(--muted);
-      background: #fffdfa;
+      background: #fcfcfc;
     }
     .stack { display: grid; gap: 16px; }
     .notice {
       background: var(--warn-soft);
-      border: 1px solid #ebc2aa;
+      border: 1px solid var(--line);
       color: var(--warn);
     }
     .meta {
