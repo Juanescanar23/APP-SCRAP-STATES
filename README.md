@@ -50,6 +50,11 @@ uv run dramatiq app.workers.tasks_download app.workers.tasks_import app.workers.
 ## Railway
 
 - El repo ya trae configuración lista para Railway en `railway/api/railway.json`, `railway/worker-state/railway.json` y `railway/worker-web/railway.json`.
+- El contenedor también soporta `BIZINTEL_SERVICE_ROLE` para reutilizar la misma imagen en varios servicios Railway:
+  - `api`
+  - `worker-state`
+  - `worker-web`
+  - `migrate`
 - `scripts/railway-api.sh` arranca FastAPI usando `PORT`.
 - `scripts/railway-migrate.sh` corre `alembic upgrade head`.
 - `scripts/railway-worker-state.sh` consume `fl_download`, `fl_import`, `fl_normalize` y `fl_sunbiz_harvest`.
