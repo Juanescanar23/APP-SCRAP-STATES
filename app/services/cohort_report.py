@@ -17,7 +17,7 @@ from app.db.models import (
     ReviewQueueKind,
     ReviewQueueStatus,
 )
-from app.db.session import get_session_factory
+from app.db.session import run_read_query
 from app.services.entity_cohorts import classify_entity_cohort, iter_cohorts
 
 
@@ -60,15 +60,14 @@ class CohortReport:
 def run_cohort_report(state: str) -> CohortReport:
     normalized_state = state.upper()
     settings = get_settings()
-    report = CohortReport(
-        state=normalized_state,
-        fresh_max_age_days=settings.fl_fresh_cohort_days,
-        tempered_max_age_days=settings.fl_tempered_cohort_days,
-        cohorts={cohort.value: CohortMetrics() for cohort in iter_cohorts()},
-    )
-
-    session = get_session_factory()()
-    try:
+    
+    def _load_report(session) -> CohortReport:
+        report = CohortReport(
+            state=normalized_state,
+            fresh_max_age_days=settings.fl_fresh_cohort_days,
+            tempered_max_age_days=settings.fl_tempered_cohort_days,
+            cohorts={cohort.value: CohortMetrics() for cohort in iter_cohorts()},
+        )
         entities = session.scalars(
             select(BusinessEntity)
             .where(BusinessEntity.state == normalized_state)
@@ -147,7 +146,6 @@ def run_cohort_report(state: str) -> CohortReport:
                 continue
 
             metrics.pending_website_evidence += 1
-    finally:
-        session.close()
+        return report
 
-    return report
+    return run_read_query(_load_report)

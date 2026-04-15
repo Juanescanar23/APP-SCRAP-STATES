@@ -19,7 +19,7 @@ from app.db.models import (
     SourceRecordRef,
     SunbizArtifact,
 )
-from app.db.session import get_session_factory
+from app.db.session import run_read_query
 from app.services.sunbiz_harvest import is_pdf_mature
 
 
@@ -67,14 +67,13 @@ class CanaryReport:
 def run_canary_report(state: str, *, hours: int = 24) -> CanaryReport:
     normalized_state = state.upper()
     window_started_at = datetime.now(UTC) - timedelta(hours=hours)
-    report = CanaryReport(
-        state=normalized_state,
-        hours=hours,
-        window_started_at=window_started_at,
-    )
-
-    session = get_session_factory()()
-    try:
+    
+    def _load_report(session) -> CanaryReport:
+        report = CanaryReport(
+            state=normalized_state,
+            hours=hours,
+            window_started_at=window_started_at,
+        )
         download_runs = session.scalars(
             select(JobRun)
             .where(JobRun.connector_kind == "florida_official_downloader")
@@ -255,8 +254,9 @@ def run_canary_report(state: str, *, hours: int = 24) -> CanaryReport:
             )
             or 0
         )
-    finally:
-        session.close()
+        return report
+
+    report = run_read_query(_load_report)
 
     if report.harvested_entities > 0:
         report.html_hit_rate = report.html_email_hits / report.harvested_entities

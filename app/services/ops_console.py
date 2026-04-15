@@ -36,7 +36,7 @@ from app.db.models import (
     SourceFileStatus,
     SunbizArtifact,
 )
-from app.db.session import get_session_factory
+from app.db.session import run_read_query
 from app.services.canary_report import run_canary_report
 from app.services.cohort_report import run_cohort_report
 from app.services.entity_cohorts import classify_entity_cohort, prioritize_records_by_entity_cohort
@@ -160,8 +160,7 @@ def build_ops_dashboard_context(state: str) -> dict[str, object]:
     canary_report = run_canary_report(normalized_state, hours=24)
     source_summary = build_official_source_summary(normalized_state)
 
-    session = get_session_factory()()
-    try:
+    def _load_dashboard_extras(session) -> tuple[int, int, JobRun | None]:
         pending_review_items = int(
             session.scalar(
                 select(func.count(ReviewQueueItem.id))
@@ -187,8 +186,11 @@ def build_ops_dashboard_context(state: str) -> dict[str, object]:
             .order_by(JobRun.started_at.desc())
             .limit(1)
         ).first()
-    finally:
-        session.close()
+        return pending_review_items, pending_evidence_review, latest_run
+
+    pending_review_items, pending_evidence_review, latest_run = run_read_query(
+        _load_dashboard_extras,
+    )
 
     return {
         "state": normalized_state,
@@ -226,8 +228,8 @@ def build_ops_dashboard_context(state: str) -> dict[str, object]:
 
 def build_official_source_summary(state: str) -> dict[str, object]:
     normalized_state = state.upper()
-    session = get_session_factory()()
-    try:
+    
+    def _load_summary_rows(session) -> tuple[int, int, list[SourceFile]]:
         active_entities = int(
             session.scalar(
                 select(func.count(BusinessEntity.id))
@@ -249,8 +251,9 @@ def build_official_source_summary(state: str) -> dict[str, object]:
             .where(SourceFile.state == normalized_state)
             .order_by(SourceFile.downloaded_at.desc())
         ).all()
-    finally:
-        session.close()
+        return active_entities, current_snapshots, source_files
+
+    active_entities, current_snapshots, source_files = run_read_query(_load_summary_rows)
 
     completed_by_kind: dict[SourceFileKind, list[SourceFile]] = defaultdict(list)
     for row in source_files:
@@ -303,8 +306,7 @@ def build_official_source_summary(state: str) -> dict[str, object]:
 
 
 def list_job_runs(state: str, *, limit: int = 25) -> list[dict[str, object]]:
-    session = get_session_factory()()
-    try:
+    def _load_rows(session) -> list[dict[str, object]]:
         rows = session.scalars(
             select(JobRun)
             .where(JobRun.state == state.upper())
@@ -312,13 +314,12 @@ def list_job_runs(state: str, *, limit: int = 25) -> list[dict[str, object]]:
             .limit(limit)
         ).all()
         return [_job_run_row(row) for row in rows]
-    finally:
-        session.close()
+
+    return run_read_query(_load_rows)
 
 
 def list_source_files(state: str, *, limit: int = 25) -> list[dict[str, object]]:
-    session = get_session_factory()()
-    try:
+    def _load_rows(session) -> list[dict[str, object]]:
         rows = session.scalars(
             select(SourceFile)
             .where(SourceFile.state == state.upper())
@@ -326,13 +327,12 @@ def list_source_files(state: str, *, limit: int = 25) -> list[dict[str, object]]
             .limit(limit)
         ).all()
         return [_source_file_row(row) for row in rows]
-    finally:
-        session.close()
+
+    return run_read_query(_load_rows)
 
 
 def list_sunbiz_artifacts(state: str, *, limit: int = 25) -> list[dict[str, object]]:
-    session = get_session_factory()()
-    try:
+    def _load_rows(session) -> list[dict[str, object]]:
         rows = session.execute(
             select(SunbizArtifact, BusinessEntity)
             .join(BusinessEntity, BusinessEntity.id == SunbizArtifact.entity_id)
@@ -341,13 +341,12 @@ def list_sunbiz_artifacts(state: str, *, limit: int = 25) -> list[dict[str, obje
             .limit(limit)
         ).all()
         return [_sunbiz_artifact_row(artifact, entity) for artifact, entity in rows]
-    finally:
-        session.close()
+
+    return run_read_query(_load_rows)
 
 
 def list_review_queue_rows(state: str, *, limit: int = 50) -> list[dict[str, object]]:
-    session = get_session_factory()()
-    try:
+    def _load_rows(session) -> list[dict[str, object]]:
         rows = session.execute(
             select(ReviewQueueItem, BusinessEntity)
             .join(BusinessEntity, BusinessEntity.id == ReviewQueueItem.entity_id)
@@ -368,13 +367,12 @@ def list_review_queue_rows(state: str, *, limit: int = 50) -> list[dict[str, obj
             }
             for item, entity in rows
         ]
-    finally:
-        session.close()
+
+    return run_read_query(_load_rows)
 
 
 def list_pending_evidence_rows(state: str, *, limit: int = 50) -> list[dict[str, object]]:
-    session = get_session_factory()()
-    try:
+    def _load_rows(session) -> list[dict[str, object]]:
         rows = session.execute(
             select(ContactEvidence, BusinessEntity, OfficialDomain)
             .join(BusinessEntity, BusinessEntity.id == ContactEvidence.entity_id)
@@ -400,8 +398,8 @@ def list_pending_evidence_rows(state: str, *, limit: int = 50) -> list[dict[str,
             }
             for evidence, entity, domain in rows
         ]
-    finally:
-        session.close()
+
+    return run_read_query(_load_rows)
 
 
 def describe_export(
@@ -480,8 +478,7 @@ def get_storage_object(
             f"Unsupported storage kind: {storage_kind!r}. Expected one of: {allowed}."
         )
 
-    session = get_session_factory()()
-    try:
+    def _load_storage(session) -> tuple[str, str]:
         if normalized_kind == "source-file":
             source_file = session.get(SourceFile, object_id)
             if source_file is None or not source_file.bucket_key:
@@ -494,8 +491,9 @@ def get_storage_object(
                 raise LookupError("Sunbiz artifact not found or missing bucket key.")
             filename = artifact.bucket_key.rsplit("/", 1)[-1]
             key = artifact.bucket_key
-    finally:
-        session.close()
+        return filename, key
+
+    filename, key = run_read_query(_load_storage)
 
     payload = get_object_store().get_bytes(key)
     media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -508,12 +506,11 @@ def build_source_file_preview(
     parsed_limit: int = 12,
     raw_line_limit: int = 8,
 ) -> dict[str, object]:
-    session = get_session_factory()()
-    try:
+    def _load_metadata(session) -> dict[str, object]:
         source_file = session.get(SourceFile, object_id)
         if source_file is None or not source_file.bucket_key:
             raise LookupError("Source file not found or missing bucket key.")
-        metadata = {
+        return {
             "id": str(source_file.id),
             "state": source_file.state,
             "provider": source_file.provider,
@@ -532,8 +529,8 @@ def build_source_file_preview(
             "downloaded_at": _isoformat(source_file.downloaded_at),
             "processed_at": _isoformat(source_file.processed_at),
         }
-    finally:
-        session.close()
+
+    metadata = run_read_query(_load_metadata)
 
     payload = get_object_store().get_bytes(str(metadata["bucket_key"]))
     archive_members = _resolve_archive_members(
@@ -705,8 +702,7 @@ def _build_contactos_evidence_export_rows(
     entity_ids = [entity.id for entity in entities]
     entity_by_id = {entity.id: entity for entity in entities}
 
-    session = get_session_factory()()
-    try:
+    def _load_rows(session) -> list[tuple[ContactEvidence, OfficialDomain]]:
         rows = session.execute(
             select(ContactEvidence, OfficialDomain)
             .join(OfficialDomain, OfficialDomain.id == ContactEvidence.domain_id)
@@ -714,8 +710,9 @@ def _build_contactos_evidence_export_rows(
             .where(ContactEvidence.kind.in_(VISIBLE_WEBSITE_EVIDENCE_KINDS))
             .order_by(ContactEvidence.observed_at.desc())
         ).all()
-    finally:
-        session.close()
+        return rows
+
+    rows = run_read_query(_load_rows)
 
     export_rows: list[dict[str, object]] = []
     for evidence, domain in rows:
@@ -756,16 +753,16 @@ def _load_prioritized_entities(
     cohort: str,
     include_fresh: bool,
 ) -> list[BusinessEntity]:
-    session = get_session_factory()()
-    try:
+    def _load_entities(session) -> list[BusinessEntity]:
         entities = session.scalars(
             select(BusinessEntity)
             .where(BusinessEntity.state == state.upper())
             .where(BusinessEntity.status == EntityStatus.active)
             .order_by(BusinessEntity.legal_name.asc())
         ).all()
-    finally:
-        session.close()
+        return entities
+
+    entities = run_read_query(_load_entities)
 
     return prioritize_records_by_entity_cohort(
         entities,
@@ -826,8 +823,9 @@ def _load_enrichment_bundle(
         return []
 
     entity_ids = [entity.id for entity in entities]
-    session = get_session_factory()()
-    try:
+    def _load_bundle_rows(
+        session,
+    ) -> tuple[list[OfficialDomain], list[tuple[ContactEvidence, OfficialDomain]]]:
         domains = session.scalars(
             select(OfficialDomain)
             .where(OfficialDomain.entity_id.in_(entity_ids))
@@ -840,8 +838,9 @@ def _load_enrichment_bundle(
             .where(ContactEvidence.kind.in_(VISIBLE_WEBSITE_EVIDENCE_KINDS))
             .order_by(ContactEvidence.observed_at.desc())
         ).all()
-    finally:
-        session.close()
+        return domains, evidence_rows
+
+    domains, evidence_rows = run_read_query(_load_bundle_rows)
 
     verified_domain_by_entity: dict[uuid.UUID, OfficialDomain] = {}
     best_domain_by_entity: dict[uuid.UUID, OfficialDomain] = {}
